@@ -148,15 +148,14 @@ class RNGModal(Modal, title="Insert the number of data values to create!"):
             placeholder="Enter a positive integer..."
         )
         self.add_item(self.answer)
-
-        self.response_future = asyncio.get_event_loop().create_future()  # Handles cancellations
+        self.response_future = asyncio.get_event_loop().create_future()
 
     async def on_submit(self, interaction: discord.Interaction):
         """Handles valid user input and generates the graph."""
         try:
             num_values = int(self.answer.value)
 
-            if num_values <= 0:  # Prevents negative or zero values
+            if num_values <= 0:
                 raise ValueError("The number must be a positive integer.")
 
             x_axis = np.arange(1, num_values + 1)
@@ -189,15 +188,14 @@ class ManualModal(Modal, title='Insert the array of data values!'):
         super().__init__(timeout=15)
         self.answer = TextInput(label='Array of Values', style=discord.TextStyle.short)
         self.add_item(self.answer)
-        self.response_future = asyncio.get_event_loop().create_future()  # Handles cancellations
-
+        self.response_future = asyncio.get_event_loop().create_future()
 
     async def on_submit(self, interaction: discord.Interaction):
         print("CHECK: " + self.answer.value.replace(' ', ''))
         input_array = [int(x) for x in self.answer.value.replace(' ', '').split(",")]
         print("Transformed array: " + str(input_array))
         try:
-            x_axis = list(range(1, len(input_array) + 1))  # Now matches input_array length
+            x_axis = list(range(1, len(input_array) + 1))
             np_x = np.array(x_axis)
             np_y = np.array(input_array)
 
@@ -214,7 +212,6 @@ class ManualModal(Modal, title='Insert the array of data values!'):
                 "Invalid input! Please in the form of a **comma-separated list of numbers**.", ephemeral=True
             )
             self.response_future.set_exception(ValueError("User entered invalid input."))
-
             # bot_state.active_interactions.remove(interaction.user.id)
 
     async def on_timeout(self):
@@ -529,7 +526,6 @@ class CreateNNView(View):
     
     async def on_timeout(self):
         """Prevents timeout from removing an active interaction if the user has already interacted."""
-        # If no interaction happened, proceed with timeout behavior
         print(self.original_interaction, bot_state.active_interactions.values())
         if self.original_interaction in bot_state.active_interactions.values():
             print(f"[DEBUG @ 426] Timeout removing active interaction for user {self.original_interaction.user.id}")
@@ -541,7 +537,7 @@ class CreateNNView(View):
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
-        return  # Do nothing if the user has already interacted
+        return
 
 
     @discord.ui.button(emoji="1️⃣", label="Random Dataset", style=discord.ButtonStyle.primary)
