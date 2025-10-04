@@ -2,5 +2,6 @@
 .replit
 replit.nix
 requirements.txt
+.idea/
 __pycache__/
 lib/python3.10/site-packages/
