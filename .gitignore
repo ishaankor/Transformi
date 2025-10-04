@@ -1,2 +1,6 @@
 .env
-__py_cache__/
+.replit
+replit.nix
+requirements.txt
+__pycache__/
+lib/python3.10/site-packages/
