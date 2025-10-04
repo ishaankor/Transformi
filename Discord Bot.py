@@ -5,14 +5,18 @@ import random
 import graphviz
 import numpy as np
 import pandas as pd
-import pyarrow
+# import pyarrow
 import concurrent.futures
 import matplotlib.pyplot as plt
+from sklearn.neural_network import MLPClassifier
 import tensorflow as tf
+from tensorflow.keras.utils import plot_model
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+import matplotlib.patches as patches
 import discord
 from enum import Enum
 from sklearn.linear_model import LinearRegression
-from tensorflow.keras.utils import plot_model
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import Select, View, Button, Modal, TextInput
@@ -26,6 +30,17 @@ from discord.ui import Modal, TextInput
 from sklearn.linear_model import LinearRegression
 from keep_alive import keep_alive
 from discord.ui import Modal, TextInput
+
+# Configure SSL for macOS - must be done before any Discord imports
+import ssl
+import certifi
+try:
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    ssl._create_default_https_context = lambda: ssl_context
+    print("SSL certificates configured successfully")
+except Exception as e:
+    print(f"SSL configuration warning: {e}")
+
 from sklearn.linear_model import LinearRegression
 
 
@@ -274,27 +289,68 @@ async def linear_regression_calculator(interaction, dataframe, feature_set, labe
 
 
 def train_neural_network():
-    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-    x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
-    x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+    try:
+        
+        print("Loading MNIST dataset...")
+        (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
+        
+        x_train = x_train[:5000]
+        y_train = y_train[:5000]
+        x_test = x_test[:1000]
+        y_test = y_test[:1000]
+        
+        print("Preprocessing data...")
+        x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+        x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
 
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(28, 28, 1)),
-        tf.keras.layers.MaxPooling2D((2, 2)),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(64, activation='relu'),
-        tf.keras.layers.Dense(10, activation='softmax')
-    ])
+        print("Creating model...")
+        model = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(28, 28, 1)),
+            tf.keras.layers.MaxPooling2D((2, 2)),
+            tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(64, activation='relu'),
+            tf.keras.layers.Dense(10, activation='softmax')
+        ])
 
-    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-    model.fit(x_train, y_train, epochs=1, validation_data=(x_test, y_test))
-    plot_model(model, to_file='model_architecture.png', show_shapes=True, show_layer_names=True)
+        print("Compiling model...")
+        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        
+        print("Training model...")
+        history = model.fit(
+            x_train, y_train, 
+            epochs=1, 
+            validation_data=(x_test, y_test), 
+            verbose=0,
+            batch_size=32
+        )
+        
+        train_acc = history.history['accuracy'][-1]
+        val_acc = history.history['val_accuracy'][-1]
+        print(f"Training accuracy: {train_acc:.4f}")
+        print(f"Validation accuracy: {val_acc:.4f}")
+        
+        try:
+            print("Saving model architecture...")
+            plot_model(model, to_file='model_architecture.png', show_shapes=True, show_layer_names=True)
+            print("Model architecture saved successfully!")
+        except Exception as plot_error:
+            print(f"Warning: Could not save model plot: {plot_error}")
+        
+        print("Neural network training completed successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"Error during neural network training: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 async def train(ctx):
     # await ctx.followup.send("Training the neural network, this may take a while...")
     loop = asyncio.get_running_loop()
     with concurrent.futures.ThreadPoolExecutor() as pool:
-        await loop.run_in_executor(pool, train_neural_network)
+        result = await loop.run_in_executor(pool, train_neural_network)
+        return result
 
 
 class GraphLRView(View):
@@ -607,9 +663,13 @@ class CreateNNView(View):
 
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            await loop.run_in_executor(pool, train_neural_network)  # Run training asynchronously
+            result = await loop.run_in_executor(pool, train_neural_network)  # Run training asynchronously
 
-        await interaction.followup.send("Training complete! Model is ready.", ephemeral=True)
+        if result:
+            await interaction.followup.send("Training complete! Model is ready.", ephemeral=True)
+        else:
+            await interaction.followup.send("Training failed. Please check the logs.", ephemeral=True)
+            
         print(f"[DEBUG @ 548] Removed active interaction for user {interaction.user.id} due to invalid input.")
         del bot_state.active_interactions[interaction.user.id]
 
@@ -637,7 +697,6 @@ async def interaction_perm_check(interaction: discord.Interaction):
         del bot_state.active_interactions[interaction.user.id]
         # bot_state.graphlr_active_interactions.discard(interaction)
         return False
-
 
 async def check_user_instances(interaction: discord.Interaction):
     """Checks if a user has an ongoing interaction and prevents new ones."""
