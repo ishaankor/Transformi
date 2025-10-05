@@ -5,7 +5,7 @@ import random
 import graphviz
 import numpy as np
 import pandas as pd
-# import pyarrow
+import pyarrow
 import concurrent.futures
 import matplotlib.pyplot as plt
 from sklearn.neural_network import MLPClassifier
@@ -357,7 +357,6 @@ class GraphLRView(View):
 
     async def on_timeout(self):
         """Prevents timeout from removing an active interaction if the user has already interacted."""
-        # If no interaction happened, proceed with timeout behavior
         print(self.original_interaction, bot_state.active_interactions.values())
         if self.original_interaction in bot_state.active_interactions.values():
             print(f"[DEBUG @ 269] Timeout removing active interaction for user {self.original_interaction.user.id}")
@@ -369,7 +368,7 @@ class GraphLRView(View):
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
-        return  # Do nothing if the user has already interacted
+        return
 
 
     @discord.ui.button(emoji="1️⃣", label="Random Values", style=discord.ButtonStyle.primary)
