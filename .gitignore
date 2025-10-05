@@ -1,7 +1,46 @@
+# Environment and secrets
 .env
-.replit
-replit.nix
-requirements.txt
-.idea/
+*.env
+
+# Python
 __pycache__/
-lib/python3.10/site-packages/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated files
+*.png
+*.jpg
+*.jpeg
+model_architecture.png
+test.png
+
+# Logs
+*.log

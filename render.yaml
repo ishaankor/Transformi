@@ -1,0 +1,26 @@
+services:services:
+
+  - type: web  - type: background
+
+    name: discord-ml-bot    name: discord-bot
+
+    env: python    env: python
+
+    plan: free    plan: starter
+
+    buildCommand: pip install -r requirements.txt    buildCommand: pip install -r requirements.txt
+
+    startCommand: python "Discord Bot.py"    startCommand: python "Discord Bot.py"
+
+    envVars:    envVars:
+
+      - key: DISCORD_BOT_TOKEN      - key: DISCORD_BOT_TOKEN
+
+        sync: false        sync: false
+
+      - key: PORT      - key: PYTHON_VERSION
+
+        value: 10000        value: 3.10.14
+
+    healthCheckPath: /health    autoDeploy: false
+    autoDeploy: true
