@@ -11,4 +11,7 @@ jobs:
 
     steps:
       - name: Run cURL on Website
-        run: curl -s https://transformi.onrender.com
+        run: |
+          echo "Pinging website..."
+          curl -v https://transformi.onrender.com
+
