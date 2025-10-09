@@ -287,39 +287,48 @@ async def linear_regression_calculator(interaction, dataframe, feature_set, labe
 
 def train_neural_network():
     try:
+        print("Configuring TensorFlow...")
+        tf.config.threading.set_inter_op_parallelism_threads(1)
+        tf.config.threading.set_intra_op_parallelism_threads(1)
+        
+        tf.config.set_visible_devices([], 'GPU')
         
         print("Loading MNIST dataset...")
         (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-        
-        x_train = x_train[:5000]
-        y_train = y_train[:5000]
-        x_test = x_test[:1000]
-        y_test = y_test[:1000]
+        print(f"Dataset loaded! Training shape: {x_train.shape}, Test shape: {x_test.shape}")
         
         print("Preprocessing data...")
+        x_train = x_train[:1000]
+        y_train = y_train[:1000]
+        x_test = x_test[:200]
+        y_test = y_test[:200]
+        print(f"Using smaller dataset - Training: {len(x_train)}, Test: {len(x_test)}")
+        
         x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
         x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+        print("Data preprocessing complete!")
 
-        print("Creating model...")
+        print("Creating simplified model...")
         model = tf.keras.Sequential([
-            tf.keras.layers.Conv2D(32, (3, 3), activation='relu', input_shape=(28, 28, 1)),
-            tf.keras.layers.MaxPooling2D((2, 2)),
-            tf.keras.layers.Flatten(),
-            tf.keras.layers.Dense(64, activation='relu'),
+            tf.keras.layers.Flatten(input_shape=(28, 28, 1)),
+            tf.keras.layers.Dense(32, activation='relu'),
             tf.keras.layers.Dense(10, activation='softmax')
         ])
+        print("Model created!")
 
         print("Compiling model...")
         model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        print("Model compiled!")
         
-        print("Training model...")
+        print("Starting training...")
         history = model.fit(
             x_train, y_train, 
             epochs=1, 
             validation_data=(x_test, y_test), 
-            verbose=0,
-            batch_size=32
+            verbose=1,
+            batch_size=16
         )
+        print("Training completed!")
         
         train_acc = history.history['accuracy'][-1]
         val_acc = history.history['val_accuracy'][-1]
@@ -328,10 +337,27 @@ def train_neural_network():
         
         try:
             print("Saving model architecture...")
-            plot_model(model, to_file='model_architecture.png', show_shapes=True, show_layer_names=True)
+            tf.keras.utils.plot_model(model, to_file='model_architecture.png', 
+                                    show_shapes=True, show_layer_names=True, 
+                                    rankdir='TB', dpi=150)
             print("Model architecture saved successfully!")
         except Exception as plot_error:
             print(f"Warning: Could not save model plot: {plot_error}")
+        
+        def cleanup_files():
+            try:
+                if os.path.exists('model_architecture.png'):
+                    os.remove('model_architecture.png')
+                    print("Cleaned up model_architecture.png")
+                if os.path.exists('test.png'):
+                    os.remove('test.png')
+                    print("Cleaned up test.png")
+            except Exception as e:
+                print(f"Cleanup warning: {e}")
+        
+        import threading
+        cleanup_timer = threading.Timer(30.0, cleanup_files)
+        cleanup_timer.start()
         
         print("Neural network training completed successfully!")
         return True
@@ -703,16 +729,16 @@ class CreateNNView(View):
         print(f"[DEBUG @ 548] Removed active interaction for user {interaction.user.id} due to invalid input.")
         del bot_state.active_interactions[interaction.user.id]
 
-    @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
-    async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
-        """Let user manually input data values."""
-        for item in self.children:
-            item.disabled = True
-        await self.original_interaction.edit_original_response(view=self)
+    # @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
+    # async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
+    #     """Let user manually input data values."""
+    #     for item in self.children:
+    #         item.disabled = True
+    #     await self.original_interaction.edit_original_response(view=self)
 
-        modal = ManualModal()
-        await interaction.response.send_modal(modal)
-        bot_state.active_interactions[interaction.user.id] = interaction.response
+    #     modal = ManualModal()
+    #     await interaction.response.send_modal(modal)
+    #     bot_state.active_interactions[interaction.user.id] = interaction.response
 
 async def interaction_perm_check(interaction: discord.Interaction):
     interaction_user_perms = interaction.channel.permissions_for(interaction.user)
