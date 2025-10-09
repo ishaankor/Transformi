@@ -13,6 +13,25 @@ import tensorflow as tf
 from tensorflow.keras.utils import plot_model
 from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+import seaborn as sns
+import discord
+from discord.ext import commands
+from discord import app_commands
+import threading
+import time
+import socket
+from keep_alive import keep_alive
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+tf.config.threading.set_intra_op_parallelism_threads(2)
+tf.config.threading.set_inter_op_parallelism_threads(2)
+
+tf.config.set_visible_devices([], 'GPU')
+
 import matplotlib.patches as patches
 import discord
 from enum import Enum
@@ -31,7 +50,6 @@ from sklearn.linear_model import LinearRegression
 from keep_alive import keep_alive
 from discord.ui import Modal, TextInput
 
-# Configure SSL for macOS - must be done before any Discord imports
 import ssl
 import certifi
 try:
@@ -343,6 +361,41 @@ def train_neural_network():
             print("Model architecture saved successfully!")
         except Exception as plot_error:
             print(f"Warning: Could not save model plot: {plot_error}")
+            print("Creating fallback visualization...")
+            try:
+                fig, ax = plt.subplots(figsize=(10, 8))
+                ax.text(0.5, 0.9, '🧠 Neural Network Architecture', ha='center', va='top', 
+                       fontsize=20, fontweight='bold', transform=ax.transAxes)
+                
+                layers = ['Input (784)', 'Dense (32)', 'Output (10)']
+                activations = ['28×28 pixels', 'ReLU activation', 'Softmax (classes)']
+                
+                for i, (layer, activation) in enumerate(zip(layers, activations)):
+                    y_pos = 0.7 - i * 0.2
+                    ax.text(0.5, y_pos, layer, ha='center', va='center', 
+                           fontsize=16, fontweight='bold', 
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue"),
+                           transform=ax.transAxes)
+                    ax.text(0.5, y_pos - 0.05, activation, ha='center', va='center', 
+                           fontsize=12, style='italic', transform=ax.transAxes)
+                    if i < len(layers) - 1:
+                        ax.annotate('', xy=(0.5, y_pos - 0.1), xytext=(0.5, y_pos - 0.08),
+                                  arrowprops=dict(arrowstyle='->', lw=2, color='black'),
+                                  transform=ax.transAxes)
+                
+                ax.text(0.1, 0.05, f'📊 Training: {train_acc:.1%} accuracy\n📈 Validation: {val_acc:.1%} accuracy\n⚡ Parameters: {model.count_params():,}', 
+                       fontsize=12, transform=ax.transAxes,
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen"))
+                
+                ax.set_xlim(0, 1)
+                ax.set_ylim(0, 1)
+                ax.axis('off')
+                plt.tight_layout()
+                plt.savefig('model_architecture.png', dpi=150, bbox_inches='tight')
+                plt.close()
+                print("Fallback visualization created successfully!")
+            except Exception as fallback_error:
+                print(f"Could not create fallback visualization: {fallback_error}")
         
         def cleanup_files():
             try:
