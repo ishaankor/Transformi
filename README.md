@@ -1,7 +1,5 @@
 # Discord Bot - Machine Learning & Data Visualization
 
-This Discord bot includes machine learning features, data visualization, and interactive commands.
-
 ## Features
 - Linear regression graphing with random data, CSV files, or manual input
 - Neural network training and visualization using TensorFlow
