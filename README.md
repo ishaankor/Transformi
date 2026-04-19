@@ -1,7 +1,5 @@
 # Discord Bot - Machine Learning & Data Visualization
 
-This Discord bot includes machine learning features, data visualization, and interactive commands.
-
 ## Features
 - Linear regression graphing with random data, CSV files, or manual input
 - Neural network training and visualization using TensorFlow
@@ -52,42 +50,6 @@ The bot uses a **hybrid approach**:
 ## 📋 Bot Commands
 - `/graph_linear_regression` - Create linear regression graphs with various data sources
 - `/create_neural_network` - Train and visualize neural networks on MNIST data
-
-## 🔧 Local Development
-
-### Setup:
-```bash
-# Clone repository
-git clone https://github.com/ishaankor/Transformi.git
-cd Transformi
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Create .env file
-echo "DISCORD_BOT_TOKEN=your_token_here" > .env
-
-# Run bot
-python "Discord Bot.py"
-```
-
-## 🎯 Alternative Deployments
-
-### Railway:
-- Uses `railway.json` configuration
-- Good free tier with $5 monthly credit
-
-### Fly.io:
-- Uses `Dockerfile` and `fly.toml`
-- Docker-based deployment
-
-### Heroku:
-- Uses `Procfile` and `runtime.txt`
-- Traditional PaaS deployment
 
 ## 🛠️ Technical Details
 
