@@ -75,28 +75,8 @@ class BotState:
         self.bot_message_history = {}
         self.active_interactions = {}
         self.dataset_cache = {}
-        self.model_cache = {}
-        self.model_metadata = {}
         # self.createnn_active_interactions = set()
         self.text_channel_list = []
-        self.load_caches()
-
-    def load_caches(self):
-        cache_dir = 'cache'
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-        for file in os.listdir(cache_dir):
-            try:
-                if file.startswith('model_') and file.endswith('.pkl'):
-                    user_id = int(file.split('_')[1].split('.')[0])
-                    with open(os.path.join(cache_dir, file), 'rb') as f:
-                        self.model_cache[user_id] = pickle.load(f)
-                elif file.startswith('metadata_') and file.endswith('.pkl'):
-                    user_id = int(file.split('_')[1].split('.')[0])
-                    with open(os.path.join(cache_dir, file), 'rb') as f:
-                        self.model_metadata[user_id] = pickle.load(f)
-            except Exception as e:
-                print(f"Failed to load cache file {file}: {e}")
 
     async def initialize(self):
         synced = await bot.tree.sync()
@@ -327,10 +307,14 @@ async def linear_regression_calculator(interaction, dataframe, feature_set, labe
     y_axis = dataframe[label_set].tolist()
     np_y = np.array(y_axis)
 
-    reg = LinearRegression().fit(np_x.reshape(-1, 1), np_y)
-    plt.scatter(np_x, np_y, color='g')
-    plt.plot(np_x, reg.predict(np_x.reshape(-1, 1)), color='k')
-    plt.savefig('test.png')
+    def compute_and_plot():
+        plt.switch_backend('Agg')
+        reg = LinearRegression().fit(np_x.reshape(-1, 1), np_y)
+        plt.scatter(np_x, np_y, color='g')
+        plt.plot(np_x, reg.predict(np_x.reshape(-1, 1)), color='k')
+        plt.savefig('test.png')
+
+    await asyncio.get_event_loop().run_in_executor(None, compute_and_plot)
     test_file = File('test.png')
     await interaction.followup.send(file=test_file, ephemeral=True)
 
@@ -340,6 +324,7 @@ def get_numeric_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_correlation_heatmap(df: pd.DataFrame, filename: str = 'correlation_heatmap.png') -> bool:
+    plt.switch_backend('Agg')
     numeric_df = get_numeric_dataframe(df)
     if numeric_df.shape[1] < 2:
         return False
@@ -521,38 +506,7 @@ class ModelTypeView(View):
         await interaction.response.edit_message(view=self)
 
 
-class PredictModal(Modal, title='Enter feature values for prediction'):
-    def __init__(self, model, metadata):
-        super().__init__(timeout=30)
-        self.model = model
-        self.metadata = metadata
-        self.answer = TextInput(
-            label='Feature values',
-            style=discord.TextStyle.short,
-            placeholder='Enter numbers as comma-separated values',
-            required=True
-        )
-        self.add_item(self.answer)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            values = [float(x.strip()) for x in self.answer.value.split(',') if x.strip()]
-            x_input = np.array(values).reshape(-1, 1)
-            preds = self.model.predict(x_input)
-            formatted = ', '.join(str(round(float(value), 4)) for value in preds)
-            await interaction.response.send_message(
-                f'Predictions for feature `{self.metadata["feature"]}`:\n{formatted}',
-                ephemeral=True
-            )
-        except ValueError:
-            await interaction.response.send_message(
-                'Please enter valid numeric values separated by commas.', ephemeral=True
-            )
-        except Exception as exc:
-            await interaction.response.send_message(f'Prediction failed: {exc}', ephemeral=True)
-
-
-class ManualDatasetModal(Modal, title="Enter your dataset manually"):
     def __init__(self):
         super().__init__(timeout=30)
         self.feature_input = TextInput(label="Feature values", style=discord.TextStyle.paragraph, placeholder="Comma-separated numbers", required=True)
@@ -681,52 +635,15 @@ def get_cached_dataset(user_id: int) -> pd.DataFrame | None:
     return None
 
 
-def get_cached_model(user_id: int):
-    return bot_state.model_cache.get(user_id), bot_state.model_metadata.get(user_id)
 
-
-def cache_dataset(user_id: int, df: pd.DataFrame) -> None:
-    # Dataset caching disabled. Every command requests fresh user input.
-    return
-
-
-def cache_model(user_id: int, model, feature_col: str, label_col: str, model_name: str) -> None:
-    bot_state.model_cache[user_id] = model
-    bot_state.model_metadata[user_id] = {
-        'feature': feature_col,
-        'label': label_col,
-        'model_name': model_name
-    }
-    cache_dir = 'cache'
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-    try:
-        with open(os.path.join(cache_dir, f'model_{user_id}.pkl'), 'wb') as f:
-            pickle.dump(model, f)
-        with open(os.path.join(cache_dir, f'metadata_{user_id}.pkl'), 'wb') as f:
-            pickle.dump(bot_state.model_metadata[user_id], f)
-    except Exception as e:
-        print(f"Failed to save model cache for user {user_id}: {e}")
-
-
-def ensure_uploaded_dataset(df: pd.DataFrame | None) -> bool:
-    return df is not None and not df.empty
 
 
 def safe_model_and_dataset(interaction: discord.Interaction):
     return None
 
 
-def train_model_command_text(model_name: str, feature_col: str, label_col: str) -> str:
-    return f"Training {model_name.replace('_', ' ').title()} on feature `{feature_col}` to predict `{label_col}`."
-
-
 def compare_model_command_text(feature_col: str, label_col: str) -> str:
     return f"Comparing Linear Regression, Decision Tree, and Random Forest for `{feature_col}` → `{label_col}`."
-
-
-def predict_command_text(feature_col: str) -> str:
-    return f"Predict using the last trained model for feature `{feature_col}`."
 
 
 def upload_dataset_prompt_text() -> str:
@@ -734,15 +651,11 @@ def upload_dataset_prompt_text() -> str:
 
 
 def dataset_not_ready_text() -> str:
-    return 'No dataset is cached. Run /describe_data, /train_model, or /compare_models to provide one.'
-
-
-def model_not_ready_text() -> str:
-    return 'No trained model is available. Train a model first with /train_model.'
+    return 'No dataset is cached. Run /describe_data or /compare_models to provide one.'
 
 
 def already_cached_dataset_text() -> str:
-    return 'A dataset is already cached. Run /describe_data, /train_model, or /compare_models to continue.'
+    return 'A dataset is already cached. Run /describe_data or /compare_models to continue.'
 
 
 def no_feature_importance_text() -> str:
@@ -763,10 +676,6 @@ def training_intermediate_text(model_name: str) -> str:
 
 def compare_intermediate_text() -> str:
     return 'Training each model and comparing performance...'
-
-
-def predict_modal_text(feature_col: str) -> str:
-    return f'Enter comma-separated values for `{feature_col}` to predict labels.'
 
 
 def dataset_upload_instructions(feature_col: str, label_col: str) -> str:
@@ -844,24 +753,12 @@ def dataset_prompt_text() -> str:
     return 'Upload your dataset as a CSV file using reply to this message.'
 
 
-def model_ready_text() -> str:
-    return 'A model has been trained and cached. Use /predict to make new predictions.'
-
-
 def upload_dataset_result_text(rows: int, cols: int) -> str:
-    return f'Dataset cached: {rows} rows, {cols} columns.'
+    return f'Dataset uploaded: {rows} rows, {cols} columns.'
 
 
 def no_data_error_text() -> str:
     return 'No dataset available. Run /describe_data to provide one.'
-
-
-def no_model_error_text() -> str:
-    return 'No model available. Use /train_model first.'
-
-
-def model_ready_embed_text() -> str:
-    return 'Your trained model is ready for predictions.'
 
 
 def compare_models_summary_text() -> str:
@@ -896,16 +793,8 @@ def describe_data_help_text() -> str:
     return 'Produce a dataset summary, missing values, and correlation heatmap.'
 
 
-def train_model_help_text() -> str:
-    return 'Train one of several models using your uploaded dataset.'
-
-
 def compare_models_help_text() -> str:
     return 'Compare Linear Regression, Decision Tree, and Random Forest models.'
-
-
-def predict_help_text() -> str:
-    return 'Use your last trained model to predict new values.'
 
 
 def no_cached_summary_text() -> str:
@@ -963,32 +852,16 @@ def no_numeric_columns_text() -> str:
 def dataset_ready_text() -> str:
     return 'Your dataset is ready for analysis.'
 
-def model_saved_text() -> str:
-    return 'Your trained model is cached for this session.'
-
-
 def dataset_upload_success_text(rows: int, cols: int) -> str:
     return f'Dataset uploaded with {rows} rows and {cols} columns.'
-
-
-def training_success_text(model_name: str) -> str:
-    return f'{model_name.replace("_", " ").title()} trained successfully.'
 
 
 def compare_results_text() -> str:
     return 'Comparison results are ready.'
 
 
-def predict_results_text() -> str:
-    return 'Prediction completed.'
-
-
 def upload_dataset_finished_text() -> str:
     return 'Dataset upload finished.'
-
-
-def model_training_message_text() -> str:
-    return 'Please choose a model to train.'
 
 
 def choose_dataset_columns_text() -> str:
@@ -1015,16 +888,8 @@ def quick_eda_text() -> str:
     return 'Quick EDA report generated.'
 
 
-def train_model_flow_text() -> str:
-    return 'Training flow started.'
-
-
 def compare_model_flow_text() -> str:
     return 'Model comparison flow started.'
-
-
-def prediction_flow_text() -> str:
-    return 'Prediction flow started.'
 
 
 
@@ -1048,24 +913,12 @@ def dataset_upload_info_text() -> str:
     return 'Dataset upload is required before model training.'
 
 
-def model_predict_info_text() -> str:
-    return 'Prediction uses the last trained model.'
-
-
 def compare_info_text() -> str:
     return 'Compare three models on the same dataset.'
 
 
-def model_selection_info_text() -> str:
-    return 'Choose the model architecture to train.'
-
-
 def dataset_selection_info_text() -> str:
     return 'Choose feature and label columns for training.'
-
-
-def prediction_input_info_text() -> str:
-    return 'Enter comma-separated feature values for prediction.'
 
 
 def upload_request_text() -> str:
@@ -1717,68 +1570,23 @@ async def describe_data(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
     try:
-        df = get_cached_dataset(interaction.user.id)
-        if not ensure_uploaded_dataset(df):
-            df = await ask_for_dataset_via_menu(
-                interaction,
-                title="How would you like to provide your dataset?",
-                description="1️⃣ Random Dataset Generator \n2️⃣ Dataset File \n3️⃣ Manual Input"
-            )
-            if df is None:
-                return
-            cache_dataset(interaction.user.id, df)
+        df = await ask_for_dataset_via_menu(
+            interaction,
+            title="How would you like to provide your dataset?",
+            description="1️⃣ Random Dataset Generator \n2️⃣ Dataset File \n3️⃣ Manual Input"
+        )
+        if df is None:
+            return
 
-        embed = build_dataset_summary_embed(df)
+        embed = await asyncio.get_event_loop().run_in_executor(None, build_dataset_summary_embed, df)
         files = []
-        if save_correlation_heatmap(df):
+        heatmap_saved = await asyncio.get_event_loop().run_in_executor(None, save_correlation_heatmap, df)
+        if heatmap_saved:
             files.append(File('correlation_heatmap.png'))
         await interaction.followup.send(embed=embed, files=files, ephemeral=True)
     finally:
         bot_state.active_interactions.pop(interaction.user.id, None)
 
-
-@bot.tree.command(name="train_model", description="Train a regression model on a cached dataset.")
-@app_commands.check(initialization_check)
-async def train_model(interaction: discord.Interaction):
-    if not await check_user_instances(interaction):
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    try:
-        df = get_cached_dataset(interaction.user.id)
-        if not ensure_uploaded_dataset(df):
-            df = await ask_for_dataset_via_menu(
-                interaction,
-                title="How would you like to provide your dataset?",
-                description="1️⃣ Random Dataset Generator \n2️⃣ Dataset File \n3️⃣ Manual Input"
-            )
-            if df is None:
-                return
-            cache_dataset(interaction.user.id, df)
-
-        selected = await select_feature_and_label(interaction, df)
-        if selected is None:
-            return
-
-        feature_col, label_col = selected
-        model_view = ModelTypeView()
-        await interaction.followup.send('Choose the model type to train.', view=model_view, ephemeral=True)
-
-        try:
-            model_name = await asyncio.wait_for(model_view.selection, timeout=60.0)
-        except asyncio.TimeoutError:
-            await interaction.followup.send('Model selection timed out. Please try /train_model again.', ephemeral=True)
-            return
-
-        try:
-            model, mse, r2 = train_model_on_dataframe(df, feature_col, label_col, model_name)
-            cache_model(interaction.user.id, model, feature_col, label_col, model_name)
-            embed = model_info_embed(model_name, mse, r2, feature_col, label_col)
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as exc:
-            await interaction.followup.send(f'Training failed: {exc}', ephemeral=True)
-    finally:
-        bot_state.active_interactions.pop(interaction.user.id, None)
 
 
 @bot.tree.command(name="compare_models", description="Compare multiple regression models on a cached dataset.")
@@ -1789,15 +1597,13 @@ async def compare_models(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
     try:
-        df = get_cached_dataset(interaction.user.id)
-        if not ensure_uploaded_dataset(df):
-            df = await ask_for_dataset_via_menu(
-                interaction,
-                title="How would you like to provide your dataset?",
-                description="1️⃣ Random Dataset Generator \n2️⃣ Dataset File \n3️⃣ Manual Input"
-            )
-            if df is None:
-                return
+        df = await ask_for_dataset_via_menu(
+            interaction,
+            title="How would you like to provide your dataset?",
+            description="1️⃣ Random Dataset Generator \n2️⃣ Dataset File \n3️⃣ Manual Input"
+        )
+        if df is None:
+            return
             cache_dataset(interaction.user.id, df)
 
         selected = await select_feature_and_label(interaction, df)
@@ -1807,7 +1613,7 @@ async def compare_models(interaction: discord.Interaction):
         feature_col, label_col = selected
         await interaction.followup.send('Training models and comparing performance. This may take a moment...', ephemeral=True)
         try:
-            results = compare_models_on_dataframe(df, feature_col, label_col)
+            results = await asyncio.get_event_loop().run_in_executor(None, compare_models_on_dataframe, df, feature_col, label_col)
             embed = compare_models_embed(results, feature_col, label_col)
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as exc:
@@ -1815,23 +1621,6 @@ async def compare_models(interaction: discord.Interaction):
     finally:
         bot_state.active_interactions.pop(interaction.user.id, None)
 
-
-@bot.tree.command(name="predict", description="Use the last trained model to infer new values.")
-@app_commands.check(initialization_check)
-async def predict(interaction: discord.Interaction):
-    if not await check_user_instances(interaction):
-        return
-
-    try:
-        model, metadata = get_cached_model(interaction.user.id)
-        if model is None or metadata is None:
-            await interaction.response.send_message('No trained model is available. Train one first with /train_model.', ephemeral=True)
-            return
-
-        modal = PredictModal(model, metadata)
-        await interaction.response.send_modal(modal)
-    finally:
-        bot_state.active_interactions.pop(interaction.user.id, None)
 
 
 @bot.command(name="restart", description="Restarts the bot if issues are encountered.")
