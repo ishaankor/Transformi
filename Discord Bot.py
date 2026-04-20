@@ -268,7 +268,16 @@ class DatasetSelect(Select):
     def __init__(self, parent_view, dataframe: pd.DataFrame, value_id):
         self.parent_view = parent_view
         self.value_id = value_id
-        select_options = [discord.SelectOption(label=column, description=f"This is {column}") for column in dataframe.columns.values]
+        self.columns = list(dataframe.columns.values)
+        select_options = []
+        for i, column in enumerate(self.columns):
+            label = column[:100].strip()
+            if not label:
+                label = f"Column {i}"
+            description = f"This is {column}"[:100].strip()
+            if not description:
+                description = f"Column {i}"
+            select_options.append(discord.SelectOption(label=label, description=description, value=str(i)))
         super().__init__(placeholder="Choose an option...", min_values=1, max_values=1, options=select_options)
 
     async def callback(self, interaction: discord.Interaction):
@@ -277,7 +286,7 @@ class DatasetSelect(Select):
             value_id_str = "feature" if self.value_id == DatasetView.ValueIdentification.feature else "label"
             await interaction.response.send_message(
                 f"If you've selected the correct {value_id_str}, hit the checkmark above!", ephemeral=True, delete_after=5)
-            self.parent_view.current_option = self.values[0]
+            self.parent_view.current_option = self.columns[int(self.values[0])]
         else:
             print("All good?!")
 
@@ -417,8 +426,22 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
 
 
 async def select_feature_and_label(interaction: discord.Interaction, df: pd.DataFrame) -> tuple[str, str] | None:
-    feature_view = DatasetView(df, 1)
-    label_view = DatasetView(df, 2)
+    numeric_df = get_numeric_dataframe(df)
+    if numeric_df.shape[1] < 2:
+        await interaction.followup.send(
+            'Your dataset must contain at least two numeric columns for feature and label selection.',
+            ephemeral=True
+        )
+        return None
+    if numeric_df.shape[1] > 25:
+        await interaction.followup.send(
+            'Your dataset has more than 25 numeric columns. Using the first 25 columns for selection.',
+            ephemeral=True
+        )
+        numeric_df = numeric_df.iloc[:, :25]
+
+    feature_view = DatasetView(numeric_df, 1)
+    label_view = DatasetView(numeric_df, 2)
 
     await interaction.followup.send(
         content='Select the feature column to use as input.',
@@ -1401,8 +1424,23 @@ class GraphLRView(View):
                 await dataset_prompt.delete()
                 await msg.delete()
                 df = pd.read_csv(dataset_file.fp, engine="pyarrow")
-                feature_view = DatasetView(df, 1)
-                label_view = DatasetView(df, 2)
+
+                numeric_df = get_numeric_dataframe(df)
+                if numeric_df.shape[1] < 2:
+                    await interaction.followup.send(
+                        "Your CSV must include at least two numeric columns for feature and target selection.",
+                        ephemeral=True
+                    )
+                    return
+                if numeric_df.shape[1] > 25:
+                    await interaction.followup.send(
+                        "Your CSV has more than 25 numeric columns. Using the first 25 columns for selection.",
+                        ephemeral=True
+                    )
+                    numeric_df = numeric_df.iloc[:, :25]
+
+                feature_view = DatasetView(numeric_df, 1)
+                label_view = DatasetView(numeric_df, 2)
                 await interaction.followup.send(
                     content="Select the column that represents the feature values!",
                     view=feature_view, ephemeral=True)
@@ -1413,7 +1451,7 @@ class GraphLRView(View):
                 selected_feature = await feature_view.selected_option
                 selected_label = await label_view.selected_option
                 print("CHECK!")
-                await linear_regression_calculator(interaction, df, selected_feature, selected_label)
+                await linear_regression_calculator(interaction, numeric_df, selected_feature, selected_label)
             except asyncio.TimeoutError:
                 await interaction.followup.send("You took too long to respond! Please run the command again.",
                                                 ephemeral=True)
