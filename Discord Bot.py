@@ -193,13 +193,33 @@ class RNGModal(Modal, title="Insert the number of data values to create!"):
             self.response_future.set_result(num_values)
 
         except ValueError:
-            await interaction.response.send_message(
-                "Invalid input! Please enter a **positive integer**.", ephemeral=True
+            # await interaction.response.send_message(
+            #     "Invalid input! Please enter a **positive integer**.", ephemeral=True
+            # )
+            await interaction.response.edit_message(
+                embed=Embed(
+                    title="⚠️ Invalid input! ⚠️",
+                    description="**Please enter a positive integer.**",
+                    color=0xff0000,
+                ),
+                view=None
             )
-            self.response_future.set_exception(ValueError("User entered invalid input."))
+            # self.complete_selection(exc=asyncio.TimeoutError("Selection timed out."))
+            if not self.response_future.done():
+                self.response_future.set_exception(ValueError("User entered invalid input."))
+            cleanup_interaction(interaction.user.id)
 
     async def on_timeout(self):
         """Handles modal timeout (user closes or doesn't respond)."""
+        # cleanup_interaction(self.original_interaction.user.id)
+        # await in.edit_original_response(
+        #     embed=Embed(
+        #         title="⏱️ Selection Timed Out",
+        #         description="**You didn't respond in time!** Please run the command again.",
+        #         color=0xff0000
+        #     ),
+        #     view=None
+        # )
         if not self.response_future.done():
             self.response_future.set_exception(asyncio.TimeoutError("Modal timed out."))    
 
@@ -213,9 +233,9 @@ class ManualModal(Modal, title='Insert the array of data values!'):
 
     async def on_submit(self, interaction: discord.Interaction):
         print("CHECK: " + self.answer.value.replace(' ', ''))
-        input_array = [int(x) for x in self.answer.value.replace(' ', '').split(",")]
-        print("Transformed array: " + str(input_array))
         try:
+            input_array = [int(x) for x in self.answer.value.replace(' ', '').split(",")]
+            print("Transformed array: " + str(input_array))
             x_axis = list(range(1, len(input_array) + 1))
             np_x = np.array(x_axis)
             np_y = np.array(input_array)
@@ -228,10 +248,16 @@ class ManualModal(Modal, title='Insert the array of data values!'):
             test_file = File('test.png')
             await interaction.response.send_message(file=test_file, ephemeral=True)
             self.response_future.set_result(input_array)
-        except AttributeError:
-            await interaction.response.send_message(
-                "Invalid input! Please in the form of a **comma-separated list of numbers**.", ephemeral=True
+        except ValueError:
+            await interaction.response.edit_message(
+                embed=Embed(
+                    title="⚠️ Invalid input! ⚠️",
+                    description="**Please enter a positive integer.**",
+                    color=0xff0000,
+                ),
+                view=None
             )
+            cleanup_interaction(interaction.user.id)
             self.response_future.set_exception(ValueError("User entered invalid input."))
             # bot_state.active_interactions.remove(interaction.user.id)
 
@@ -375,7 +401,6 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
         dataset_prompt = await interaction.original_response()
     else:
         dataset_prompt = await interaction.followup.send(prompt_text, ephemeral=ephemeral)
-    bot_state.active_interactions[interaction.user.id] = dataset_prompt
 
     async def invalid_reply(message: discord.Message, reason: str):
         if interaction.response.is_done():
@@ -402,11 +427,11 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
         df = pd.read_csv(dataset_file.fp, engine='pyarrow')
         return df
     except asyncio.TimeoutError:
+        await asyncio.create_task(safe_delete_message(dataset_prompt))
         await interaction.followup.send('Upload timed out. Please run this command again when ready.', ephemeral=True)
     except Exception as exc:
+        await asyncio.create_task(safe_delete_message(dataset_prompt))
         await interaction.followup.send(f'Unable to read the CSV file: {exc}', ephemeral=True)
-    finally:
-        bot_state.active_interactions.pop(interaction.user.id, None)
     return None
 
 
@@ -550,10 +575,19 @@ class DatasetInputView(View):
             self.selected_df.set_result(df)
 
     async def on_timeout(self):
+        await self.original_interaction.edit_original_response(
+            embed=Embed(
+                title="⏱️ Selection Timed Out",
+                description="**You didn't respond in time!** Please run the command again.",
+                color=0xff0000
+            ),
+            view=None
+        )
         self.complete_selection(exc=asyncio.TimeoutError("Selection timed out."))
 
     @discord.ui.button(label="Upload CSV", style=discord.ButtonStyle.primary)
     async def upload_csv_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
@@ -565,6 +599,7 @@ class DatasetInputView(View):
 
     @discord.ui.button(label="Generate Random Dataset", style=discord.ButtonStyle.secondary)
     async def random_dataset_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
@@ -576,6 +611,7 @@ class DatasetInputView(View):
 
     @discord.ui.button(label="Manual Input", style=discord.ButtonStyle.success)
     async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
@@ -599,7 +635,6 @@ async def ask_for_dataset_via_menu(interaction: discord.Interaction, title: str,
         df = await asyncio.wait_for(view.selected_df, timeout=120)
         return df
     except asyncio.TimeoutError:
-        await interaction.followup.send("Selection timed out. Please try again.", ephemeral=True)
         return None
 
 
@@ -1162,11 +1197,25 @@ class GraphLRView(View):
 
     async def on_timeout(self):
         """Prevents timeout from removing an active interaction if the user has already interacted."""
-        print(self.original_interaction, bot_state.active_interactions.values())
-        if self.original_interaction in bot_state.active_interactions.values():
+        debug_values = []
+        for v in bot_state.active_interactions.values():
+            if isinstance(v, tuple):
+                debug_values.append(v[0])
+            else:
+                debug_values.append(v)
+        print(self.original_interaction, debug_values)
+        
+        if self.original_interaction.user.id in bot_state.active_interactions:
             print(f"[DEBUG @ 269] Timeout removing active interaction for user {self.original_interaction.user.id}")
-            await self.original_interaction.edit_original_response(content="**You didn't respond in time! Try again!**", embed=None, view=None)
-            del bot_state.active_interactions[self.original_interaction.user.id]
+            cleanup_interaction(self.original_interaction.user.id)
+            await self.original_interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Selection Timed Out",
+                    description="**You didn't respond in time!** Please run the command again.",
+                    color=0xff0000
+                ),
+                view=None
+            )
             return
          
         print(f"[DEBUG @ 274] Timeout ignored for user {self.original_interaction.user.id} since they interacted.")
@@ -1179,13 +1228,13 @@ class GraphLRView(View):
     @discord.ui.button(emoji="1️⃣", label="Random Values", style=discord.ButtonStyle.primary)
     async def button_callback(self, interaction: discord.Interaction, button: Button):
         """Opens the modal and properly handles timeouts and cancellations."""
+        self.stop()  # Stop the view to prevent multiple interactions
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
 
         modal = RNGModal()
         await interaction.response.send_modal(modal)
-        bot_state.active_interactions[interaction.user.id] = interaction.response
 
         # for item in self.children:
         #     item.disabled = True
@@ -1197,14 +1246,19 @@ class GraphLRView(View):
             num_values = await asyncio.wait_for(modal.response_future, timeout=15)  # Wait max 5 min
             print(f"User entered: {num_values}")  # Optional logging
         except asyncio.TimeoutError:
-            await interaction.followup.send("You closed the modal or didn’t respond in time.", ephemeral=True)
-            print(modal.timeout)
-            await self.original_interaction.edit_original_response(view=self)
+            # cleanup_interaction(self.original_interaction.user.id)
+            await self.original_interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Selection Timed Out",
+                    description="**You didn't respond in time!** Please run the command again.",
+                    color=0xff0000
+                ),
+                view=None
+            )
             print(f"[DEBUG @ 289] Removed active interaction for user {interaction.user.id} due to invalid input.")
+            cleanup_interaction(interaction.user.id)
         except ValueError:
             pass
-        finally:
-            del bot_state.active_interactions[interaction.user.id]
 
 
     @discord.ui.button(emoji="2️⃣", label="Dataset File (CSV)", style=discord.ButtonStyle.primary)
@@ -1212,6 +1266,7 @@ class GraphLRView(View):
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
+        self.stop()  # Stop the view to prevent multiple interactions
 
         if await interaction_perm_check(interaction):
             await self.original_interaction.edit_original_response(
@@ -1222,8 +1277,6 @@ class GraphLRView(View):
             await interaction.response.send_message(
                 f"{interaction.user.mention}, please reply to this message with your dataset in a **CSV** file!")
             dataset_prompt = await interaction.original_response()
-            print(f"Changed active interaction --> {dataset_prompt}")
-            bot_state.active_interactions[interaction.user.id] = dataset_prompt
 
             async def run(m):
                 await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command}**!",
@@ -1305,36 +1358,52 @@ class GraphLRView(View):
                 selected_label = await label_view.selected_option
                 print("CHECK!")
                 await linear_regression_calculator(interaction, numeric_df, selected_feature, selected_label)
+                cleanup_interaction(interaction.user.id)
             except asyncio.TimeoutError:
-                await interaction.followup.send("You took too long to respond! Please run the command again.",
-                                                ephemeral=True)
+                await asyncio.create_task(safe_delete_message(dataset_prompt))
+                await self.original_interaction.edit_original_response(
+                    embed=Embed(
+                        title="⏱️ Selection Timed Out",
+                        description="**You didn't respond in time!** Please run the command again.",
+                        color=0xff0000
+                    ),
+                    view=None
+                )
                 print("Deleting dataset prompt...")
-                await interaction.delete_original_response()
+                # await interaction.delete_original_response()
                 print(f"[DEBUG @ 380] Removed active interaction for user {interaction.user.id} due to invalid input.")
+                cleanup_interaction(interaction.user.id)
             finally:
-                del bot_state.active_interactions[interaction.user.id]
+                pass
 
     
     @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
     async def third_button_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()  # Stop the view to prevent multiple interactions
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
 
         modal = ManualModal()
         await interaction.response.send_modal(modal)
-        bot_state.active_interactions[interaction.user.id] = interaction.response
 
         try:
             num_values = await asyncio.wait_for(modal.response_future, timeout=15)  # Wait max 5 min
             print(f"User entered: {num_values}")  # Optional logging
         except asyncio.TimeoutError:
-            await interaction.followup.send("You closed the modal or didn’t respond in time.", ephemeral=True)
+            await self.original_interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Modal Timed Out",
+                    description="**You didn't respond in time!** Please run the command again.",
+                    color=0xff0000,
+                ),
+                view=None
+            )
+            # self.complete_selection(exc=asyncio.TimeoutError("Selection timed out."))
             print(f"[DEBUG @ 289] Removed active interaction for user {interaction.user.id} due to invalid input.")
+            cleanup_interaction(interaction.user.id)
         except ValueError:
             pass
-        finally:
-            del bot_state.active_interactions[interaction.user.id]
 
 
 class CreateNNView(View):
@@ -1345,11 +1414,25 @@ class CreateNNView(View):
     
     async def on_timeout(self):
         """Prevents timeout from removing an active interaction if the user has already interacted."""
-        print(self.original_interaction, bot_state.active_interactions.values())
-        if self.original_interaction in bot_state.active_interactions.values():
+        debug_values = []
+        for v in bot_state.active_interactions.values():
+            if isinstance(v, tuple):
+                debug_values.append(v[0])
+            else:
+                debug_values.append(v)
+        print(self.original_interaction, debug_values)
+        
+        if self.original_interaction.user.id in bot_state.active_interactions:
             print(f"[DEBUG @ 426] Timeout removing active interaction for user {self.original_interaction.user.id}")
-            await self.original_interaction.edit_original_response(content="**You didn't respond in time! Try again!**", embed=None, view=None)
-            del bot_state.active_interactions[self.original_interaction.user.id]
+            cleanup_interaction(self.original_interaction.user.id)
+            await self.original_interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Selection Timed Out",
+                    description="**You didn't respond in time!** Please run the command again.",
+                    color=0xff0000
+                ),
+                view=None
+            )
             return
         
         print(f"[DEBUG @ 431] Timeout ignored for user {self.original_interaction.user.id} since they interacted.")
@@ -1389,7 +1472,6 @@ class CreateNNView(View):
             await interaction.response.send_message(
                 f"{interaction.user.mention}, please reply to this message with your dataset in a **CSV** file!")
             dataset_prompt = await interaction.original_response()
-            bot_state.active_interactions[interaction.user.id] = dataset_prompt
 
             async def run(m):
                 await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command}**!",
@@ -1457,13 +1539,14 @@ class CreateNNView(View):
                 print("CHECK!")
                 await self.start_training(interaction, self.selected_data)
             except asyncio.TimeoutError:
+                await asyncio.create_task(safe_delete_message(dataset_prompt))
                 await interaction.followup.send(
                     "You took too long to upload the file! Please run the command again.",
                     ephemeral=True
                 )
-                await interaction.delete_original_response()
+                # await interaction.delete_original_response()
                 print(f"[DEBUG @ 508] Removed active interaction for user {interaction.user.id} due to invalid input.")
-                del bot_state.active_interactions[interaction.user.id]
+                cleanup_interaction(interaction.user.id)
 
     async def start_training(self, interaction: discord.Interaction, dataframe: pd.DataFrame):
         """Handles the training after dataset selection."""
@@ -1521,7 +1604,7 @@ class CreateNNView(View):
             await interaction.followup.send("Training failed. Please check the logs.", ephemeral=True)
             
         print(f"[DEBUG @ 548] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        del bot_state.active_interactions[interaction.user.id]
+        cleanup_interaction(interaction.user.id)
 
     # @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
     # async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
@@ -1544,9 +1627,34 @@ async def interaction_perm_check(interaction: discord.Interaction):
             "We can't upload files in this channel if we want to complete the interaction! Please move to a **different channel** or **direct message** me!",
             ephemeral=True)
         print(f"[DEBUG @ 537] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        del bot_state.active_interactions[interaction.user.id]
+        cleanup_interaction(interaction.user.id)
         # bot_state.graphlr_active_interactions.discard(interaction)
         return False
+
+async def remove_after_timeout(user_id, delay):
+    await asyncio.sleep(delay)
+    bot_state.active_interactions.pop(user_id, None)
+
+def cleanup_interaction(user_id):
+    """Cleanup user interaction after visualization is sent."""
+    if user_id in bot_state.active_interactions:
+        value = bot_state.active_interactions[user_id]
+        # Handle both tuple (interaction, task) and old InteractionMessage format
+        if isinstance(value, tuple):
+            _, task = value
+            task.cancel()
+        else:
+            # It's a message object (from CSV upload prompts), delete it
+            asyncio.create_task(safe_delete_message(value))
+        del bot_state.active_interactions[user_id]
+
+
+async def safe_delete_message(message):
+    """Safely delete a message without raising exceptions."""
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 async def check_user_instances(interaction: discord.Interaction):
     """Checks if a user has an ongoing interaction and prevents new ones."""
@@ -1558,7 +1666,8 @@ async def check_user_instances(interaction: discord.Interaction):
         )
         return False    
     
-    bot_state.active_interactions[user_id] = interaction
+    task = asyncio.create_task(remove_after_timeout(user_id, 900))  # 15 minutes timeout
+    bot_state.active_interactions[user_id] = (interaction, task)
     return True
 
 
@@ -1585,7 +1694,7 @@ async def describe_data(interaction: discord.Interaction):
             files.append(File('correlation_heatmap.png'))
         await interaction.followup.send(embed=embed, files=files, ephemeral=True)
     finally:
-        bot_state.active_interactions.pop(interaction.user.id, None)
+        cleanup_interaction(interaction.user.id)
 
 
 
@@ -1619,7 +1728,7 @@ async def compare_models(interaction: discord.Interaction):
         except Exception as exc:
             await interaction.followup.send(f'Comparison failed: {exc}', ephemeral=True)
     finally:
-        bot_state.active_interactions.pop(interaction.user.id, None)
+        cleanup_interaction(interaction.user.id)
 
 
 
@@ -1683,7 +1792,7 @@ async def graph_linear_regression_error(interaction: discord.Interaction, error:
                                                 ephemeral=True)
     else:
         print(f"[DEBUG @ 617] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        del bot_state.active_interactions[interaction.user.id]
+        cleanup_interaction(interaction.user.id)
         await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
 
 
@@ -1694,7 +1803,7 @@ async def create_neural_network_error(interaction: discord.Interaction, error: a
                                                 ephemeral=True)
     else:
         print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        del bot_state.active_interactions[interaction.user.id]
+        cleanup_interaction(interaction.user.id)
         await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
 
 
