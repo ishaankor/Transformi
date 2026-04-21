@@ -404,9 +404,11 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
 
     async def invalid_reply(message: discord.Message, reason: str):
         if interaction.response.is_done():
-            await interaction.followup.send(f"{message.author.mention} {reason}", ephemeral=True)
+            await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+            await message.delete()
         else:
             await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
+            await message.delete()
 
     def check(m: discord.Message):
         if m.author != bot.user and m.author == interaction.user:
@@ -417,29 +419,29 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
                     asyncio.create_task(invalid_reply(m, 'Please upload just one CSV file.'))
                 else:
                     asyncio.create_task(invalid_reply(m, 'Please upload a CSV file in reply to the prompt.'))
+                    # await message.delete()
         return False
 
     try:
-        msg = await bot.wait_for('message', check=check, timeout=120.0)
+        msg = await bot.wait_for('message', check=check, timeout=30.0)
         dataset_file = await msg.attachments[0].to_file()
         await dataset_prompt.delete()
         await msg.delete()
         df = pd.read_csv(dataset_file.fp, engine='pyarrow')
         return df
     except asyncio.TimeoutError:
-        await asyncio.create_task(safe_delete_message(dataset_prompt))
         await interaction.edit_original_response(
             embed=Embed(
-                title="⏱️ Timed Out ⏱️",
+                title="⏱️ Upload Timed Out ⏱️",
                 description="**You didn't respond in time!** Please run the command again.",
                 color=0xff0000
             ),
             view=None
         )
+        await asyncio.create_task(safe_delete_message(dataset_prompt))
         # await interaction.followup.send('Upload timed out. Please run this command again when ready.', ephemeral=True)
         # cleanup_interaction(interaction.user.id)
     except Exception as exc:
-        await asyncio.create_task(safe_delete_message(dataset_prompt))
         await interaction.edit_original_response(
             embed=Embed(
                 title="⚠️ Invalid input! ⚠️",
@@ -448,6 +450,7 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
             ),
             view=None
         )
+        await asyncio.create_task(safe_delete_message(dataset_prompt))
         # cleanup_interaction(interaction.user.id)
         # await interaction.followup.send(f'Unable to read the CSV file: {exc}', ephemeral=True)
     return None
@@ -614,7 +617,16 @@ class DatasetInputView(View):
         if df is not None:
             self.complete_selection(df=df)
         else:
-            self.complete_selection(exc=ValueError("Failed to get CSV."))
+            await self.original_interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Upload Timed Out! ⏱️",
+                    description="**You didn't respond in time!** Please run the command again.",
+                    color=0xff0000
+                ),
+                view=None
+            )
+            cleanup_interaction(self.original_interaction.user.id)
+            self.complete_selection(df=None)
 
     @discord.ui.button(label="Generate Random Dataset", style=discord.ButtonStyle.secondary)
     async def random_dataset_callback(self, interaction: discord.Interaction, button: Button):
@@ -640,6 +652,7 @@ class DatasetInputView(View):
             df = await asyncio.wait_for(modal.response_future, timeout=30)
             self.complete_selection(df=df)
         except asyncio.TimeoutError:
+            cleanup_interaction(interaction.user.id)
             self.complete_selection(exc=asyncio.TimeoutError("Manual input timed out."))
 
 
@@ -651,9 +664,17 @@ async def ask_for_dataset_via_menu(interaction: discord.Interaction, title: str,
         ephemeral=True
     )
     try:
-        df = await asyncio.wait_for(view.selected_df, timeout=120)
+        df = await asyncio.wait_for(view.selected_df, timeout=30)
         return df
     except asyncio.TimeoutError:
+        await interaction.edit_original_response(
+            embed=Embed(
+                title="⏱️ Timed Out! ⏱️",
+                description="**You didn't respond in time!** Please run the command again.",
+                color=0xff0000
+            ),
+            view=None
+        )
         return None
 
 
@@ -1298,7 +1319,7 @@ class GraphLRView(View):
             dataset_prompt = await interaction.original_response()
 
             async def run(m):
-                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command}**!",
+                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command.name}**!",
                               delete_after=15)
                 await m.delete()
                 return False
@@ -1382,7 +1403,7 @@ class GraphLRView(View):
                 await asyncio.create_task(safe_delete_message(dataset_prompt))
                 await self.original_interaction.edit_original_response(
                     embed=Embed(
-                        title="⏱️ Selection Timed Out",
+                        title="⏱️ Selection Timed Out! ⏱️",
                         description="**You didn't respond in time!** Please run the command again.",
                         color=0xff0000
                     ),
@@ -1493,7 +1514,7 @@ class CreateNNView(View):
             dataset_prompt = await interaction.original_response()
 
             async def run(m):
-                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command}**!",
+                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command.name}**!",
                               delete_after=15)
                 await m.delete()
                 return False
