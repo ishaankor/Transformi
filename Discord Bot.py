@@ -428,10 +428,28 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
         return df
     except asyncio.TimeoutError:
         await asyncio.create_task(safe_delete_message(dataset_prompt))
-        await interaction.followup.send('Upload timed out. Please run this command again when ready.', ephemeral=True)
+        await interaction.edit_original_response(
+            embed=Embed(
+                title="⏱️ Timed Out ⏱️",
+                description="**You didn't respond in time!** Please run the command again.",
+                color=0xff0000
+            ),
+            view=None
+        )
+        # await interaction.followup.send('Upload timed out. Please run this command again when ready.', ephemeral=True)
+        # cleanup_interaction(interaction.user.id)
     except Exception as exc:
         await asyncio.create_task(safe_delete_message(dataset_prompt))
-        await interaction.followup.send(f'Unable to read the CSV file: {exc}', ephemeral=True)
+        await interaction.edit_original_response(
+            embed=Embed(
+                title="⚠️ Invalid input! ⚠️",
+                description="**You put a non-CSV file!** Please run the command again.",
+                color=0xff0000
+            ),
+            view=None
+        )
+        # cleanup_interaction(interaction.user.id)
+        # await interaction.followup.send(f'Unable to read the CSV file: {exc}', ephemeral=True)
     return None
 
 
@@ -577,13 +595,14 @@ class DatasetInputView(View):
     async def on_timeout(self):
         await self.original_interaction.edit_original_response(
             embed=Embed(
-                title="⏱️ Selection Timed Out",
+                title="⏱️ Selection Timed Out ⏱️",
                 description="**You didn't respond in time!** Please run the command again.",
                 color=0xff0000
             ),
             view=None
         )
         self.complete_selection(exc=asyncio.TimeoutError("Selection timed out."))
+        cleanup_interaction(self.original_interaction.user.id)
 
     @discord.ui.button(label="Upload CSV", style=discord.ButtonStyle.primary)
     async def upload_csv_callback(self, interaction: discord.Interaction, button: Button):
@@ -1674,6 +1693,7 @@ async def check_user_instances(interaction: discord.Interaction):
 @bot.tree.command(name="describe_data", description="Generate a quick dataset summary and correlation heatmap.")
 @app_commands.check(initialization_check)
 async def describe_data(interaction: discord.Interaction):
+    
     if not await check_user_instances(interaction):
         return
 
