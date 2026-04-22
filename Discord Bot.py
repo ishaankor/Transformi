@@ -75,6 +75,7 @@ class BotState:
         self.bot_message_history = {}
         self.active_interactions = {}
         self.dataset_cache = {}
+        self.nn_model_cache = {}
         # self.createnn_active_interactions = set()
         self.text_channel_list = []
 
@@ -302,13 +303,19 @@ class DatasetView(View):
         label = 2
 
     def __init__(self, dataframe: pd.DataFrame, feature_or_label: int):
-        super().__init__()
+        super().__init__(timeout=30)
         self.confirmation_status = False
         self.feature_input_status = False
         self.current_option = None
         self.selected_option = asyncio.get_event_loop().create_future()
         self.value_id = DatasetView.ValueIdentification(feature_or_label)
         self.add_item(DatasetSelect(self, dataframe, self.value_id))
+
+    async def on_timeout(self):
+        """If the view times out, set an exception on the future so it doesn't hang."""
+        print("DatasetView timed out without selection.")
+        if not self.selected_option.done():
+            self.selected_option.set_exception(asyncio.TimeoutError("DatasetView timed out."))
 
     @discord.ui.button(emoji="✅")
     async def confirm_feature_callback(self, interaction: discord.Interaction, button: Button):
@@ -403,12 +410,12 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
         dataset_prompt = await interaction.followup.send(prompt_text, ephemeral=ephemeral)
 
     async def invalid_reply(message: discord.Message, reason: str):
-        if interaction.response.is_done():
-            await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
-            await message.delete()
-        else:
-            await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
-            await message.delete()
+            if interaction.response.is_done():
+                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+                await message.delete()
+            else:
+                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
+                await message.delete()
 
     def check(m: discord.Message):
         if m.author != bot.user and m.author == interaction.user:
@@ -465,7 +472,7 @@ async def select_feature_and_label(interaction: discord.Interaction, df: pd.Data
         )
         return None
     if numeric_df.shape[1] > 25:
-        await interaction.followup.send(
+        max_columns_msg = await interaction.followup.send(
             'Your dataset has more than 25 numeric columns. Using the first 25 columns for selection.',
             ephemeral=True
         )
@@ -474,22 +481,55 @@ async def select_feature_and_label(interaction: discord.Interaction, df: pd.Data
     feature_view = DatasetView(numeric_df, 1)
     label_view = DatasetView(numeric_df, 2)
 
-    await interaction.followup.send(
+    print("Sending feature and label selection views...")
+
+    feature_msg = await interaction.followup.send(
         content='Select the feature column to use as input.',
         view=feature_view,
         ephemeral=True
     )
-    await interaction.followup.send(
+    label_msg = await interaction.followup.send(
         content='Select the target column to predict.',
         view=label_view,
         ephemeral=True
     )
 
-    selected_feature = await feature_view.selected_option
-    selected_label = await label_view.selected_option
-    if not selected_feature or not selected_label or selected_feature == selected_label:
-        await interaction.followup.send('Feature and target columns must both be selected and must be different.', ephemeral=True)
+    try:
+        selected_feature, selected_label = await asyncio.gather(
+            feature_view.selected_option,
+            label_view.selected_option
+        )
+    except asyncio.TimeoutError:
+        print("User did not select feature/label in time.")
+        
+        await feature_msg.delete()
+        await label_msg.delete()
+
+        try:
+            await max_columns_msg.delete()
+        except Exception as e:
+            print(f"max_columns_msg not present: {e}")
+        
+        # Send the timeout notice
+        await interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Timed Out! ⏱️",
+                    description="**You didn't select a feature and label in time!** Please run the command again.",
+                    color=0xff0000,
+                ),
+                view=None
+        )
+        cleanup_interaction(interaction.user.id)
+        # await interaction.followup.send('Feature and label selection timed out. Please run the command again.', ephemeral=True)
         return None
+
+    if selected_feature == selected_label:
+        await interaction.followup.send('Feature and target columns must be different.', ephemeral=True)
+        return None
+    
+    await feature_msg.delete()
+    await label_msg.delete()
+        
     return selected_feature, selected_label
 
 
@@ -550,7 +590,6 @@ class ModelTypeView(View):
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(view=self)
-
 
 
     def __init__(self):
@@ -708,9 +747,6 @@ def compare_models_embed(results: dict, feature_col: str, label_col: str) -> Emb
 
 def get_cached_dataset(user_id: int) -> pd.DataFrame | None:
     return None
-
-
-
 
 
 def safe_model_and_dataset(interaction: discord.Interaction):
@@ -1143,54 +1179,76 @@ def prediction_ready_title_text() -> str:
 
 def analysis_ready_title_text() -> str:
     return 'Analysis Ready'
+
+def train_neural_network(df, feature_cols, label_col, model_params=None):
+    if model_params is None:
+        model_params = {'epochs': 5, 'hidden_units': 32, 'task': 'regression'}
+    
     try:
         print("Configuring TensorFlow...")
         tf.config.threading.set_inter_op_parallelism_threads(1)
         tf.config.threading.set_intra_op_parallelism_threads(1)
-        
         tf.config.set_visible_devices([], 'GPU')
         
-        print("Loading MNIST dataset...")
-        (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
-        print(f"Dataset loaded! Training shape: {x_train.shape}, Test shape: {x_test.shape}")
+        print("Preprocessing user dataset...")
+        X = df[feature_cols].values.astype('float32')
+        y = df[label_col].values
         
-        print("Preprocessing data...")
-        x_train = x_train[:1000]
-        y_train = y_train[:1000]
-        x_test = x_test[:200]
-        y_test = y_test[:200]
-        print(f"Using smaller dataset - Training: {len(x_train)}, Test: {len(x_test)}")
+        # Determine task
+        if pd.api.types.is_numeric_dtype(df[label_col]):
+            task = 'regression'
+            y = y.astype('float32')
+            num_classes = 1
+        else:
+            task = 'classification'
+            from sklearn.preprocessing import LabelEncoder
+            le = LabelEncoder()
+            y = le.fit_transform(y).astype('int32')
+            num_classes = len(np.unique(y))
         
-        x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
-        x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
-        print("Data preprocessing complete!")
-
-        print("Creating simplified model...")
+        # Normalize X
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+        
+        # Split
+        from sklearn.model_selection import train_test_split
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        print(f"Dataset split - Training: {len(X_train)}, Test: {len(X_test)}")
+        
+        print("Creating model...")
+        input_shape = (X_train.shape[1],)
         model = tf.keras.Sequential([
-            tf.keras.layers.Flatten(input_shape=(28, 28, 1)),
-            tf.keras.layers.Dense(32, activation='relu'),
-            tf.keras.layers.Dense(10, activation='softmax')
+            tf.keras.layers.Dense(model_params['hidden_units'], activation='relu', input_shape=input_shape),
+            tf.keras.layers.Dense(num_classes, activation='softmax' if model_params['task'] == 'classification' else None)
         ])
         print("Model created!")
-
+        
         print("Compiling model...")
-        model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        if model_params['task'] == 'classification':
+            model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+        else:
+            model.compile(optimizer='adam', loss='mse', metrics=['mae'])
         print("Model compiled!")
         
         print("Starting training...")
         history = model.fit(
-            x_train, y_train, 
-            epochs=1, 
-            validation_data=(x_test, y_test), 
+            X_train, y_train, 
+            epochs=model_params['epochs'], 
+            validation_data=(X_test, y_test), 
             verbose=1,
             batch_size=16
         )
         print("Training completed!")
         
-        train_acc = history.history['accuracy'][-1]
-        val_acc = history.history['val_accuracy'][-1]
-        print(f"Training accuracy: {train_acc:.4f}")
-        print(f"Validation accuracy: {val_acc:.4f}")
+        if model_params['task'] == 'classification':
+            train_metric = history.history['accuracy'][-1]
+            val_metric = history.history['val_accuracy'][-1]
+            print(f"Training accuracy: {train_metric:.4f}, Validation accuracy: {val_metric:.4f}")
+        else:
+            train_metric = history.history['mae'][-1]
+            val_metric = history.history['val_mae'][-1]
+            print(f"Training MAE: {train_metric:.4f}, Validation MAE: {val_metric:.4f}")
         
         print("Saving model architecture...")
         tf.keras.utils.plot_model(model, to_file='model_architecture.png', 
@@ -1214,13 +1272,13 @@ def analysis_ready_title_text() -> str:
         cleanup_timer.start()
         
         print("Neural network training completed successfully!")
-        return True
+        return model, history, scaler.history
         
     except Exception as e:
         print(f"Error during neural network training: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return None, None
 
 async def train(ctx):
     # await ctx.followup.send("Training the neural network, this may take a while...")
@@ -1308,6 +1366,14 @@ class GraphLRView(View):
         await self.original_interaction.edit_original_response(view=self)
         self.stop()  # Stop the view to prevent multiple interactions
 
+        async def invalid_reply(message: discord.Message, reason: str):
+            if interaction.response.is_done():
+                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+                await message.delete()
+            else:
+                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
+                await message.delete()
+
         if await interaction_perm_check(interaction):
             await self.original_interaction.edit_original_response(
                 embed=Embed(title="How would you like to display your dataset?",
@@ -1319,24 +1385,23 @@ class GraphLRView(View):
             dataset_prompt = await interaction.original_response()
 
             async def run(m):
-                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command.name}**!",
-                              delete_after=15)
+                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/graph_linear_regression**!",
+                              delete_after=5)
                 await m.delete()
                 return False
 
             async def media_reply(message: discord.Message, len_exceeded: bool, file_attached=True):
                 if file_attached:
                     if len_exceeded:
-                        await dataset_prompt.reply("There's too many files! Please upload just one CSV file!", ephemeral=True)
-                        await message.delete()
+                        asyncio.create_task(invalid_reply(message, 'There\'s too many files! Please upload just one CSV file!'))
                         return False
                     else:
-                        await dataset_prompt.reply("That's not a valid CSV file! Please upload just one CSV file!", ephemeral=True)
-                        await message.delete()
+                        asyncio.create_task(invalid_reply(message, 'Please upload just one CSV file.'))
+                        # await message.delete()
                         return False
                 else:
-                    await dataset_prompt.reply("There's no files uploaded! Please upload just one CSV file!", ephemeral=True)
-                    await message.delete()
+                    asyncio.create_task(invalid_reply(message, 'There\'s no files uploaded! Please upload just one CSV file!'))
+                    # await message.delete()
                     return False
 
             def check(m: discord.Message):
@@ -1448,7 +1513,7 @@ class GraphLRView(View):
 
 class CreateNNView(View):
     def __init__(self, original_interaction):
-        super().__init__(timeout=10)
+        super().__init__(timeout=30)
         self.original_interaction = original_interaction
         self.selected_data = None 
     
@@ -1467,7 +1532,7 @@ class CreateNNView(View):
             cleanup_interaction(self.original_interaction.user.id)
             await self.original_interaction.edit_original_response(
                 embed=Embed(
-                    title="⏱️ Selection Timed Out",
+                    title="⏱️ Selection Timed Out! ⏱️",
                     description="**You didn't respond in time!** Please run the command again.",
                     color=0xff0000
                 ),
@@ -1484,6 +1549,7 @@ class CreateNNView(View):
 
     @discord.ui.button(emoji="1️⃣", label="Random Dataset", style=discord.ButtonStyle.primary)
     async def random_data_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()  # Stop the view to prevent multiple interactions
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
@@ -1498,14 +1564,23 @@ class CreateNNView(View):
         df = pd.DataFrame({"Feature": x_axis.flatten(), "Label": y_axis})
         self.selected_data = df
 
-        await self.start_training(interaction, df)
+        await self.start_training(interaction, df, ['Feature'], 'Label')
 
     @discord.ui.button(emoji="2️⃣", label="Dataset File", style=discord.ButtonStyle.primary)
     async def upload_csv_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()  # Stop the view to prevent multiple interactions
         
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
+
+        async def invalid_reply(message: discord.Message, reason: str):
+            if interaction.response.is_done():
+                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+                await message.delete()
+            else:
+                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
+                await message.delete()
 
 
         if await interaction_perm_check(interaction):
@@ -1514,25 +1589,23 @@ class CreateNNView(View):
             dataset_prompt = await interaction.original_response()
 
             async def run(m):
-                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/{interaction.command.name}**!",
-                              delete_after=15)
+                await m.reply(f"Sorry, this command was not run by you! You can try it by running **/create_neural_network**!",
+                              delete_after=5)
                 await m.delete()
                 return False
 
             async def media_reply(message: discord.Message, len_exceeded: bool, file_attached=True):
                 if file_attached:
                     if len_exceeded:
-                        await message.reply("There's too many files! Please upload just one CSV file!", delete_after=15)
-                        await message.delete()
+                        asyncio.create_task(invalid_reply(message, 'There\'s too many files! Please upload just one CSV file!'))
                         return False
                     else:
-                        await message.reply("That's not a valid CSV file! Please upload just one CSV file!",
-                                            delete_after=15)
-                        await message.delete()
+                        asyncio.create_task(invalid_reply(message, 'Please upload just one CSV file.'))
+                        # await message.delete()
                         return False
                 else:
-                    await message.reply("There's no files uploaded! Please upload just one CSV file!", delete_after=15)
-                    await message.delete()
+                    asyncio.create_task(invalid_reply(message, 'There\'s no files uploaded! Please upload just one CSV file!'))
+                    # await message.delete()
                     return False
 
             def check(m: discord.Message):
@@ -1560,36 +1633,91 @@ class CreateNNView(View):
                             return False
 
             try:
-                msg = await bot.wait_for("message", check=check, timeout=120.0)
+                msg = await bot.wait_for("message", check=check, timeout=30.0)
                 dataset_file = await msg.attachments[0].to_file()
                 await dataset_prompt.delete()
                 await msg.delete()
                 df = pd.read_csv(dataset_file.fp, engine="pyarrow")
-                feature_view = DatasetView(df, 1)
-                label_view = DatasetView(df, 2)
-                await interaction.followup.send(
-                    content="Select the column that represents the feature values!",
-                    view=feature_view, ephemeral=True)
-                await interaction.followup.send(
-                    content="Select the column that represents the label values!",
-                    view=label_view, ephemeral=True)
-                selected_feature = await feature_view.selected_option
-                selected_label = await label_view.selected_option
+                numeric_df = get_numeric_dataframe(df)
+                if numeric_df.shape[1] < 2:
+                    await interaction.followup.send(
+                        'Your dataset must contain at least two numeric columns for feature and label selection.',
+                        ephemeral=True
+                    )
+                    return
+                if numeric_df.shape[1] > 25:
+                    max_columns_msg = await interaction.followup.send(
+                        'Your dataset has more than 25 numeric columns. Using the first 25 columns for selection.',
+                        ephemeral=True
+                    )
+                    numeric_df = numeric_df.iloc[:, :25]
+
+                feature_view = DatasetView(numeric_df, 1)
+                label_view = DatasetView(numeric_df, 2)
+                feature_msg = await interaction.followup.send(
+                    content='Select the feature column to use as input.',
+                    view=feature_view,
+                    ephemeral=True
+                )
+                label_msg = await interaction.followup.send(
+                    content='Select the target column to predict.',
+                    view=label_view,
+                    ephemeral=True
+                )
+
+                try:
+                    selected_feature, selected_label = await asyncio.gather(
+                        feature_view.selected_option,
+                        label_view.selected_option
+                    )
+                except asyncio.TimeoutError:
+                    print("User did not select feature/label in time.")
+                    
+                    await feature_msg.delete()
+                    await label_msg.delete()
+
+                    try:
+                        await max_columns_msg.delete()
+                    except Exception as e:
+                        print(f"Failed to delete max_columns_msg: {e}")
+
+                    await interaction.edit_original_response(
+                            embed=Embed(
+                                title="⏱️ Timed Out! ⏱️",
+                                description="**You didn't select a feature and label in time!** Please run the command again.",
+                                color=0xff0000,
+                            ),
+                            view=None
+                    )
+                    cleanup_interaction(interaction.user.id)
+                    return None
+
+                if selected_feature == selected_label:
+                    await interaction.followup.send('Feature and target columns must be different.', ephemeral=True)
+                    return None
+
                 self.selected_data = df[[selected_feature, selected_label]]
                 print("CHECK!")
-                await self.start_training(interaction, self.selected_data)
+                await feature_msg.delete()
+                await label_msg.delete()
+                await self.start_training(interaction, self.selected_data, [selected_feature], selected_label)
             except asyncio.TimeoutError:
                 await asyncio.create_task(safe_delete_message(dataset_prompt))
-                await interaction.followup.send(
-                    "You took too long to upload the file! Please run the command again.",
-                    ephemeral=True
+                await self.original_interaction.edit_original_response(
+                    embed=Embed(
+                        title="⏱️ Selection Timed Out! ⏱️",
+                        description="**You didn't respond in time!** Please run the command again.",
+                        color=0xff0000
+                    ),
+                    view=None
                 )
                 # await interaction.delete_original_response()
                 print(f"[DEBUG @ 508] Removed active interaction for user {interaction.user.id} due to invalid input.")
                 cleanup_interaction(interaction.user.id)
 
-    async def start_training(self, interaction: discord.Interaction, dataframe: pd.DataFrame):
+    async def start_training(self, interaction: discord.Interaction, dataframe: pd.DataFrame, feature_cols, label_col):
         """Handles the training after dataset selection."""
+        self.stop()  # Stop the view to prevent multiple interactions
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
@@ -1601,45 +1729,41 @@ class CreateNNView(View):
 
         loop = asyncio.get_running_loop()
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            result = await loop.run_in_executor(pool, train_neural_network)
+            model, history, scaler = await loop.run_in_executor(pool, train_neural_network, dataframe, feature_cols, label_col, None)
 
-        if result:
+        if model and history:
             try:
                 files = []
                 
                 if os.path.exists('model_architecture.png'):
                     files.append(File('model_architecture.png', filename='neural_network_architecture.png'))
                 
-                embed = discord.Embed(
+                embed = Embed(
                     title="🧠 Neural Network Training Complete!",
-                    description="""
-                    Your neural network has been successfully trained on the MNIST dataset!
-                    
-                    **📊 Training Results:**
-                    🎯 Model architecture diagram included
-                    📈 Trained on 5,000 samples
-                    🔍 Tested on 1,000 samples
-                    ⚡ CNN with Conv2D → MaxPooling → Dense layers
-                    """,
+                    description=f"Trained on {len(dataframe)} samples.\nFeatures: {', '.join(feature_cols)}\nLabel: {label_col}",
                     color=0x00ff00
                 )
-                embed.add_field(name="🏗️ Architecture", value="Conv2D(32) → MaxPool → Flatten → Dense(64) → Dense(10)", inline=False)
-                embed.add_field(name="📊 Dataset", value="MNIST Handwritten Digits", inline=True)
-                embed.add_field(name="⏱️ Training", value="Quick training mode", inline=True)
-                embed.set_footer(text="Model architecture and training completed successfully!")
                 
-                if files:
-                    await interaction.followup.send(
-                        embed=embed,
-                        files=files,
-                        ephemeral=True
-                    )
+                if 'accuracy' in history:
+                    embed.add_field(name="Training Accuracy", value=f"{history['accuracy'][-1]:.4f}", inline=True)
+                    embed.add_field(name="Validation Accuracy", value=f"{history['val_accuracy'][-1]:.4f}", inline=True)
                 else:
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    
+                    embed.add_field(name="Training MAE", value=f"{history['mae'][-1]:.4f}", inline=True)
+                    embed.add_field(name="Validation MAE", value=f"{history['val_mae'][-1]:.4f}", inline=True)
+                
+                await interaction.followup.send(embed=embed, files=files, ephemeral=True)
+                
+                # Cache the model
+                bot_state.nn_model_cache = bot_state.nn_model_cache or {}
+                bot_state.nn_model_cache[interaction.user.id] = {
+                    'model': model,
+                    'feature_cols': feature_cols,
+                    'label_col': label_col,
+                    'scaler': scaler
+                }
+                
             except Exception as e:
-                print(f"Error sending visualization files: {e}")
-                await interaction.followup.send("Training complete! Model is ready.", ephemeral=True)
+                await interaction.followup.send(f"Error sending results: {e}", ephemeral=True)
         else:
             await interaction.followup.send("Training failed. Please check the logs.", ephemeral=True)
             
@@ -1756,8 +1880,15 @@ async def compare_models(interaction: discord.Interaction):
             return
             cache_dataset(interaction.user.id, df)
 
-        selected = await select_feature_and_label(interaction, df)
-        if selected is None:
+        try:
+            print(f"[DEBUG @ 617] Starting feature/label selection for user {interaction.user.id}")
+            selected = await select_feature_and_label(interaction, df)
+            if selected is None:
+                return
+        except Exception as exc:
+            await interaction.followup.send(f'Selection failed: {exc}', ephemeral=True)
+            print(f"[DEBUG @ 617] Removed active interaction for user {interaction.user.id} due to invalid input.")
+            cleanup_interaction(interaction.user.id)
             return
 
         feature_col, label_col = selected
@@ -1839,6 +1970,26 @@ async def graph_linear_regression_error(interaction: discord.Interaction, error:
 
 @create_neural_network.error
 async def create_neural_network_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        await interaction.response.send_message("Initialization is not complete. Please try again later.",
+                                                ephemeral=True)
+    else:
+        print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
+        cleanup_interaction(interaction.user.id)
+        await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
+
+@compare_models.error
+async def compare_models_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        await interaction.response.send_message("Initialization is not complete. Please try again later.",
+                                                ephemeral=True)
+    else:
+        print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
+        cleanup_interaction(interaction.user.id)
+        await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
+
+@describe_data.error
+async def describe_data_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
         await interaction.response.send_message("Initialization is not complete. Please try again later.",
                                                 ephemeral=True)
