@@ -1444,7 +1444,7 @@ class GraphLRView(View):
                     )
                     return
                 if numeric_df.shape[1] > 25:
-                    await interaction.followup.send(
+                    max_columns_msg = await interaction.followup.send(
                         "Your CSV has more than 25 numeric columns. Using the first 25 columns for selection.",
                         ephemeral=True
                     )
@@ -1452,15 +1452,49 @@ class GraphLRView(View):
 
                 feature_view = DatasetView(numeric_df, 1)
                 label_view = DatasetView(numeric_df, 2)
-                await interaction.followup.send(
-                    content="Select the column that represents the feature values!",
-                    view=feature_view, ephemeral=True)
-                await interaction.followup.send(
-                    content="Select the column that represents the label values!",
-                    view=label_view, ephemeral=True)
-                # await interaction.delete_original_response()
-                selected_feature = await feature_view.selected_option
-                selected_label = await label_view.selected_option
+                
+                feature_msg = await interaction.followup.send(
+                    content='Select the feature column to use as input.',
+                    view=feature_view,
+                    ephemeral=True
+                )
+                label_msg = await interaction.followup.send(
+                    content='Select the target column to predict.',
+                    view=label_view,
+                    ephemeral=True
+                )
+
+                try:
+                    selected_feature, selected_label = await asyncio.gather(
+                        feature_view.selected_option,
+                        label_view.selected_option
+                    )
+                except asyncio.TimeoutError:
+                    print("User did not select feature/label in time.")
+                    
+                    await feature_msg.delete()
+                    await label_msg.delete()
+
+                    try:
+                        await max_columns_msg.delete()
+                    except Exception as e:
+                        print(f"Failed to delete max_columns_msg: {e}")
+
+                    await interaction.edit_original_response(
+                            embed=Embed(
+                                title="⏱️ Timed Out! ⏱️",
+                                description="**You didn't select a feature and label in time!** Please run the command again.",
+                                color=0xff0000,
+                            ),
+                            view=None
+                    )
+                    cleanup_interaction(interaction.user.id)
+                    return None
+
+                if selected_feature == selected_label:
+                    await interaction.followup.send('Feature and target columns must be different.', ephemeral=True)
+                    return None
+                
                 print("CHECK!")
                 await linear_regression_calculator(interaction, numeric_df, selected_feature, selected_label)
                 cleanup_interaction(interaction.user.id)
