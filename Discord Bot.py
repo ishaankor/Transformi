@@ -411,11 +411,25 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
 
     async def invalid_reply(message: discord.Message, reason: str):
             if interaction.response.is_done():
-                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
-                await message.delete()
+                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+                await invalid_reply_msg.delete(delay=5)
+                try:
+                    await message.delete()
+                except Exception as e:
+                    print(f"DONE: Failed to delete message due to lack of permissions or in DMs, skipping cleanup. Error: {e}")
+                    # print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    pass
             else:
-                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
-                await message.delete()
+                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention} {reason}", ephemeral=True)
+                await invalid_reply_msg.delete(delay=5)
+                try:
+                    await message.delete()
+                except Exception as e:
+                    print(f"CONTINUING: Failed to delete message due to lack of permissions or in DMs, skipping cleanup. Error: {e}")
+                    # print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    pass
 
     def check(m: discord.Message):
         if m.author != bot.user and m.author == interaction.user:
@@ -433,7 +447,13 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
         msg = await bot.wait_for('message', check=check, timeout=30.0)
         dataset_file = await msg.attachments[0].to_file()
         await dataset_prompt.delete()
-        await msg.delete()
+        try:
+            await msg.delete()
+        except Exception as e:
+            print(f"POST-UPLOAD: Failed to delete message due to lack of permissions or in DMs, skipping cleanup. Error: {e}")
+            # print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+            # await interaction.followup.send(f"{msg.author.mention}, I can't delete messages!", ephemeral=True)
+            pass
         df = pd.read_csv(dataset_file.fp, engine='pyarrow')
         return df
     except asyncio.TimeoutError:
@@ -499,6 +519,9 @@ async def select_feature_and_label(interaction: discord.Interaction, df: pd.Data
             feature_view.selected_option,
             label_view.selected_option
         )
+
+        print(f"Deleting feature/label selection messages...")  # Debug log before deletion
+
     except asyncio.TimeoutError:
         print("User did not select feature/label in time.")
         
@@ -527,6 +550,11 @@ async def select_feature_and_label(interaction: discord.Interaction, df: pd.Data
         await interaction.followup.send('Feature and target columns must be different.', ephemeral=True)
         return None
     
+    try:
+        await max_columns_msg.delete()
+    except Exception as e:
+        print(f"Failed to delete max_columns_msg: {e}")
+
     await feature_msg.delete()
     await label_msg.delete()
         
@@ -649,23 +677,37 @@ class DatasetInputView(View):
     @discord.ui.button(label="Upload CSV", style=discord.ButtonStyle.primary)
     async def upload_csv_callback(self, interaction: discord.Interaction, button: Button):
         self.stop()
+        # if not interaction.permissions.attach_files:
+        #     print("User lacks attach files permission, denying CSV upload.")
+        #     await self.original_interaction.edit_original_response(
+        #         embed=Embed(
+        #             title="⚠️ Permission Error! ⚠️",
+        #             description="**You lack the 'Attach Files' permission to do this.** Please run the command again.",
+        #             color=0xff0000
+        #         ),
+        #         view=None
+        #     )
+        #     cleanup_interaction(interaction.user.id)
+        #     # self.complete_selection(exc=PermissionError("User lacks Manage Messages permission."))
+        #     return
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
-        df = await request_dataset_csv(interaction, "Please reply with your CSV file.", ephemeral=False)
-        if df is not None:
-            self.complete_selection(df=df)
-        else:
-            await self.original_interaction.edit_original_response(
-                embed=Embed(
-                    title="⏱️ Upload Timed Out! ⏱️",
-                    description="**You didn't respond in time!** Please run the command again.",
-                    color=0xff0000
-                ),
-                view=None
-            )
-            cleanup_interaction(self.original_interaction.user.id)
-            self.complete_selection(df=None)
+        if await interaction_perm_check(interaction):
+            df = await request_dataset_csv(interaction, "Please reply with your CSV file.", ephemeral=False)
+            if df is not None:
+                self.complete_selection(df=df)
+            else:
+                await self.original_interaction.edit_original_response(
+                    embed=Embed(
+                        title="⏱️ Upload Timed Out! ⏱️",
+                        description="**You didn't respond in time!** Please run the command again.",
+                        color=0xff0000
+                    ),
+                    view=None
+                )
+                cleanup_interaction(self.original_interaction.user.id)
+                self.complete_selection(df=None)
 
     @discord.ui.button(label="Generate Random Dataset", style=discord.ButtonStyle.secondary)
     async def random_dataset_callback(self, interaction: discord.Interaction, button: Button):
@@ -1343,6 +1385,7 @@ class GraphLRView(View):
         try:
             num_values = await asyncio.wait_for(modal.response_future, timeout=15)  # Wait max 5 min
             print(f"User entered: {num_values}")  # Optional logging
+            cleanup_interaction(interaction.user.id)  # Clean up active interaction on successful input
         except asyncio.TimeoutError:
             # cleanup_interaction(self.original_interaction.user.id)
             await self.original_interaction.edit_original_response(
@@ -1361,18 +1404,48 @@ class GraphLRView(View):
 
     @discord.ui.button(emoji="2️⃣", label="Dataset File (CSV)", style=discord.ButtonStyle.primary)
     async def second_button_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()  # Stop the view to prevent multiple interactions
+        # if not interaction.permissions.attach_files:
+        #     print("User lacks attach files permission, denying CSV upload.")
+        #     await self.original_interaction.edit_original_response(
+        #         embed=Embed(
+        #             title="⚠️ Permission Error! ⚠️",
+        #             description="**You lack the 'Attach Files' permission to do this.** Please run the command again.",
+        #             color=0xff0000
+        #         ),
+        #         view=None
+        #     )
+        #     cleanup_interaction(interaction.user.id)
+        #     # self.complete_selection(exc=PermissionError("User lacks Manage Messages permission."))
+        #     return
+        
         for item in self.children:
             item.disabled = True
+        
         await self.original_interaction.edit_original_response(view=self)
-        self.stop()  # Stop the view to prevent multiple interactions
 
         async def invalid_reply(message: discord.Message, reason: str):
+            print(f"Invalid reply received: {message.content} - Reason: {reason}")
             if interaction.response.is_done():
-                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
-                await message.delete()
+                print("Interaction response already sent, using followup for invalid reply.")
+                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+                await invalid_reply_msg.delete(delay=5)
+                try:
+                    await message.delete()
+                except discord.errors.Forbidden as e:
+                    print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    pass
             else:
-                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
-                await message.delete()
+                print("Sending initial interaction response for invalid reply.")
+                invalid_reply_msg = await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
+                await invalid_reply_msg.delete(delay=5)
+                try:
+                    await message.delete()
+                except discord.errors.Forbidden as e:
+                    print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    pass
 
         if await interaction_perm_check(interaction):
             await self.original_interaction.edit_original_response(
@@ -1429,11 +1502,16 @@ class GraphLRView(View):
                             return False
 
             try:
-                msg = await bot.wait_for("message", check=check, timeout=120.0)
+                msg = await bot.wait_for("message", check=check, timeout=30.0)
                 dataset_file = await msg.attachments[0].to_file()
                 print("!")
                 await dataset_prompt.delete()
-                await msg.delete()
+                try:
+                    await msg.delete()
+                except discord.errors.Forbidden as e:
+                    print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    # await interaction.followup.send(f"{interaction.user.mention}, I can't delete messages!", ephemeral=True)
+                    pass
                 df = pd.read_csv(dataset_file.fp, engine="pyarrow")
 
                 numeric_df = get_numeric_dataframe(df)
@@ -1469,6 +1547,7 @@ class GraphLRView(View):
                         feature_view.selected_option,
                         label_view.selected_option
                     )
+
                 except asyncio.TimeoutError:
                     print("User did not select feature/label in time.")
                     
@@ -1480,7 +1559,7 @@ class GraphLRView(View):
                     except Exception as e:
                         print(f"Failed to delete max_columns_msg: {e}")
 
-                    await interaction.edit_original_response(
+                    await self.original_interaction.edit_original_response(
                             embed=Embed(
                                 title="⏱️ Timed Out! ⏱️",
                                 description="**You didn't select a feature and label in time!** Please run the command again.",
@@ -1496,10 +1575,18 @@ class GraphLRView(View):
                     return None
                 
                 print("CHECK!")
+                
+                try:
+                    await max_columns_msg.delete()
+                except Exception as e:
+                    print(f"Failed to delete max_columns_msg: {e}")
+
+                await feature_msg.delete()
+                await label_msg.delete()
+                
                 await linear_regression_calculator(interaction, numeric_df, selected_feature, selected_label)
                 cleanup_interaction(interaction.user.id)
             except asyncio.TimeoutError:
-                await asyncio.create_task(safe_delete_message(dataset_prompt))
                 await self.original_interaction.edit_original_response(
                     embed=Embed(
                         title="⏱️ Selection Timed Out! ⏱️",
@@ -1509,6 +1596,7 @@ class GraphLRView(View):
                     view=None
                 )
                 print("Deleting dataset prompt...")
+                await asyncio.create_task(safe_delete_message(dataset_prompt))
                 # await interaction.delete_original_response()
                 print(f"[DEBUG @ 380] Removed active interaction for user {interaction.user.id} due to invalid input.")
                 cleanup_interaction(interaction.user.id)
@@ -1603,6 +1691,19 @@ class CreateNNView(View):
     @discord.ui.button(emoji="2️⃣", label="Dataset File", style=discord.ButtonStyle.primary)
     async def upload_csv_callback(self, interaction: discord.Interaction, button: Button):
         self.stop()  # Stop the view to prevent multiple interactions
+        # if not interaction.permissions.attach_files:
+        #     print("User lacks attach files permission, denying CSV upload.")
+        #     await self.original_interaction.edit_original_response(
+        #         embed=Embed(
+        #             title="⚠️ Permission Error! ⚠️",
+        #             description="**You lack the 'Attach Files' permission to do this.** Please run the command again.",
+        #             color=0xff0000
+        #         ),
+        #         view=None
+        #     )
+        #     cleanup_interaction(interaction.user.id)
+        #     # self.complete_selection(exc=PermissionError("User lacks Manage Messages permission."))
+        #     return
         
         for item in self.children:
             item.disabled = True
@@ -1610,11 +1711,23 @@ class CreateNNView(View):
 
         async def invalid_reply(message: discord.Message, reason: str):
             if interaction.response.is_done():
-                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
-                await message.delete()
+                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+                await invalid_reply_msg.delete(delay=5)
+                try:
+                    await message.delete()
+                except discord.errors.Forbidden as e:
+                    print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    pass
             else:
-                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
-                await message.delete()
+                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention} {reason}", ephemeral=True)
+                await invalid_reply_msg.delete(delay=5)
+                try:
+                    await message.delete()
+                except discord.errors.Forbidden as e:
+                    print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    pass
 
 
         if await interaction_perm_check(interaction):
@@ -1670,7 +1783,15 @@ class CreateNNView(View):
                 msg = await bot.wait_for("message", check=check, timeout=30.0)
                 dataset_file = await msg.attachments[0].to_file()
                 await dataset_prompt.delete()
-                await msg.delete()
+                try:
+                    await msg.delete()
+                except discord.errors.Forbidden as e:
+                    if interaction.guild is None:
+                        print("Failed to delete message in DMs, skipping cleanup.")
+                    else:
+                        await interaction.followup.send(f"{interaction.user.mention}, I can't delete messages!", ephemeral=True)
+                    # print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                    pass
                 df = pd.read_csv(dataset_file.fp, engine="pyarrow")
                 numeric_df = get_numeric_dataframe(df)
                 if numeric_df.shape[1] < 2:
@@ -1704,6 +1825,7 @@ class CreateNNView(View):
                         feature_view.selected_option,
                         label_view.selected_option
                     )
+
                 except asyncio.TimeoutError:
                     print("User did not select feature/label in time.")
                     
@@ -1715,9 +1837,9 @@ class CreateNNView(View):
                     except Exception as e:
                         print(f"Failed to delete max_columns_msg: {e}")
 
-                    await interaction.edit_original_response(
+                    await self.original_interaction.edit_original_response(
                             embed=Embed(
-                                title="⏱️ Timed Out! ⏱️",
+                                title="⏱️ Selection Timed Out! ⏱️",
                                 description="**You didn't select a feature and label in time!** Please run the command again.",
                                 color=0xff0000,
                             ),
@@ -1732,6 +1854,10 @@ class CreateNNView(View):
 
                 self.selected_data = df[[selected_feature, selected_label]]
                 print("CHECK!")
+                try:
+                    await max_columns_msg.delete()
+                except Exception as e:
+                    print(f"Failed to delete max_columns_msg: {e}")
                 await feature_msg.delete()
                 await label_msg.delete()
                 await self.start_training(interaction, self.selected_data, [selected_feature], selected_label)
@@ -1816,10 +1942,30 @@ class CreateNNView(View):
     #     bot_state.active_interactions[interaction.user.id] = interaction.response
 
 async def interaction_perm_check(interaction: discord.Interaction):
+    if interaction.guild is None:
+        # await interaction.response.send_message("This command can only be used in a server channel.", ephemeral=True)
+        return True
     interaction_user_perms = interaction.channel.permissions_for(interaction.user)
     interaction_bot_perms = interaction.channel.permissions_for(interaction.guild.me)
+    print(f"User perms: {interaction_user_perms}, Bot perms: {interaction_bot_perms}")
     if interaction_user_perms.attach_files and interaction_bot_perms.attach_files:
         return True
+    elif not interaction_user_perms.attach_files:
+        await interaction.response.send_message(
+            "You lack the **'Attach Files'** permission to upload a CSV file! Please run the command again in a channel where you have that permission, or direct message me!",
+            ephemeral=True)
+        print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
+        cleanup_interaction(interaction.user.id)
+        # bot_state.graphlr_active_interactions.discard(interaction)
+        return False
+    elif not interaction_bot_perms.attach_files:
+        await interaction.response.send_message(
+            "I lack the **'Attach Files'** permission to receive a CSV file! Please run the command again in a channel where I have that permission, or direct message me!",
+            ephemeral=True)
+        print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
+        cleanup_interaction(interaction.user.id)
+        # bot_state.graphlr_active_interactions.discard(interaction)
+        return False
     else:
         await interaction.response.send_message(
             "We can't upload files in this channel if we want to complete the interaction! Please move to a **different channel** or **direct message** me!",
@@ -1829,8 +1975,12 @@ async def interaction_perm_check(interaction: discord.Interaction):
         # bot_state.graphlr_active_interactions.discard(interaction)
         return False
 
-async def remove_after_timeout(user_id, delay):
+async def remove_after_timeout(interaction: discord.Interaction, user_id, delay):
     await asyncio.sleep(delay)
+    await interaction.followup.send(
+        "⏱️ Your interaction has timed out due to inactivity. Please run the command again if you'd like to try again!",
+        ephemeral=True
+    )
     bot_state.active_interactions.pop(user_id, None)
 
 def cleanup_interaction(user_id):
@@ -1864,13 +2014,15 @@ async def check_user_instances(interaction: discord.Interaction):
         )
         return False    
     
-    task = asyncio.create_task(remove_after_timeout(user_id, 900))  # 15 minutes timeout
+    task = asyncio.create_task(remove_after_timeout(interaction, user_id, 300))  # 15 minutes timeout
     bot_state.active_interactions[user_id] = (interaction, task)
     return True
 
 
 @bot.tree.command(name="describe_data", description="Generate a quick dataset summary and correlation heatmap.")
 @app_commands.check(initialization_check)
+# @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
+# @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def describe_data(interaction: discord.Interaction):
     
     if not await check_user_instances(interaction):
@@ -1899,6 +2051,8 @@ async def describe_data(interaction: discord.Interaction):
 
 @bot.tree.command(name="compare_models", description="Compare multiple regression models on a cached dataset.")
 @app_commands.check(initialization_check)
+# @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
+# @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def compare_models(interaction: discord.Interaction):
     if not await check_user_instances(interaction):
         return
@@ -1947,6 +2101,8 @@ async def restart(ctx: discord.ext.commands.Context):
 
 @bot.tree.command(name="graph_linear_regression", description="Graphs a linear regression model of the given dataset/values.")
 @app_commands.check(initialization_check)
+# @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
+# @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def graph_linear_regression(interaction: discord.Interaction):
     if not await check_user_instances(interaction):
         return
@@ -1959,10 +2115,12 @@ async def graph_linear_regression(interaction: discord.Interaction):
 
 @bot.tree.command(name="create_neural_network", description="Creates a neural network model of the given dataset/values.")
 @app_commands.check(initialization_check)
+# @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
+# @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def create_neural_network(interaction: discord.Interaction):
     if not await check_user_instances(interaction):
         return
-
+    
     await interaction.response.defer(ephemeral=True)
 
     try:
@@ -1979,58 +2137,136 @@ async def create_neural_network(interaction: discord.Interaction):
         print(f"Error in create_neural_network: {e}")
         await interaction.followup.send("An error occurred while processing your request.", ephemeral=True)
 
+# @bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    print(f"[DEBUG] Handling error for user {interaction.user.id}: {error}")
+    # 1. Unwrap CommandInvokeError (Catch internal crashes and 10062 timeouts)
+    if isinstance(error, app_commands.CommandInvokeError):
+        original = error.original
+        if isinstance(original, discord.errors.NotFound) and original.code == 10062:
+            print(f"[WARNING] Interaction timed out for {interaction.user.name}. Aborting error response.")
+            # cleanup_interaction(interaction.user.id) # Call your cleanup function here if needed
+            return # Silently abort to prevent the double-crash
+        else:
+            msg = f"An internal error occurred: {original}"
+            print(f"[ERROR] In command {interaction.command.name}: {original}")
+
+    elif isinstance(error, app_commands.MissingPermissions) and isinstance(error, app_commands.BotMissingPermissions):
+        missing_user = ", ".join(error.missing_permissions)
+        missing_bot = ", ".join(error.missing_permissions)
+        msg = f"❌ You are missing the following permissions: `{missing_user}`\n❌ I am missing the following permissions to execute this: `{missing_bot}`"
+
+    # 2. Specific Permissions Checks
+    elif isinstance(error, app_commands.MissingPermissions):
+        missing = ", ".join(error.missing_permissions)
+        msg = f"❌ You are missing the following permissions: `{missing}`"
+        
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        missing = ", ".join(error.missing_permissions)
+        msg = f"❌ I am missing the following permissions to execute this: `{missing}`"
 
 
-@bot.event
-async def on_command_error(ctx, exception):
-    if isinstance(exception, commands.CommandOnCooldown):
-        await ctx.reply(f"You are rate limited. Please, try again in {exception.retry_after} seconds")
-    elif isinstance(exception, commands.CheckFailure):
-        await ctx.reply("You don't have the necessary permissions to run this command!")
+    # 3. Broad Checks (Catch custom checks like initialization_check)
+    elif isinstance(error, app_commands.CheckFailure):
+        msg = "Initialization is not complete. Please try again later."
+
+    # 4. Fallback for anything else
     else:
-        print(f"Unhandled exception: {exception}")
+        msg = "An unexpected error occurred while processing the command."
+        print(f"[ERROR] Unhandled exception: {error}")
+
+    # 5. Safely attempt to respond to the user
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.errors.NotFound:
+        # Failsafe in case the interaction died EXACTLY as this block executed
+        pass
+
+    cleanup_interaction(interaction.user.id)
+
+# @bot.event
+# async def on_command_error(ctx, exception):
+#     if isinstance(exception, commands.CommandOnCooldown):
+#         await ctx.reply(f"You are rate limited. Please, try again in {exception.retry_after} seconds")
+#     elif isinstance(exception, commands.CheckFailure):
+#         await ctx.reply("You don't have the necessary permissions to run this command!")
+#     else:
+#         print(f"Unhandled exception: {exception}")
 
 
-@graph_linear_regression.error
-async def graph_linear_regression_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("Initialization is not complete. Please try again later.",
-                                                ephemeral=True)
-    else:
-        print(f"[DEBUG @ 617] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        cleanup_interaction(interaction.user.id)
-        await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
+# @graph_linear_regression.error
+# async def graph_linear_regression_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+#     if isinstance(error, app_commands.CheckFailure):
+#         await interaction.response.send_message("Initialization is not complete. Please try again later.",
+#                                                 ephemeral=True)
+#     else:
+#         print(f"[DEBUG @ 617] Removed active interaction for user {interaction.user.id} due to invalid input.")
+#         cleanup_interaction(interaction.user.id)
+#         await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
 
+# @create_neural_network.error
+# async def create_neural_network_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
 
-@create_neural_network.error
-async def create_neural_network_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("Initialization is not complete. Please try again later.",
-                                                ephemeral=True)
-    else:
-        print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        cleanup_interaction(interaction.user.id)
-        await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
+#     print(f"[DEBUG @ 617] Handling error for user {interaction.user.id}: {error}")
+    
+#     # 1. Determine the correct error message FIRST (Specific to Broad)
+#     if isinstance(error, app_commands.MissingPermissions):
+#         missing = ", ".join(error.missing_permissions)
+#         msg = f"❌ You are missing the following permissions to run this command: `{missing}`"
+        
+#     elif isinstance(error, app_commands.BotMissingPermissions):
+#         print(f"[DEBUG] BotMissingPermissions: {error.missing_permissions}")
+#         missing = ", ".join(error.missing_permissions)
+#         msg = f"❌ I am missing the following permissions to execute this command: `{missing}`"
+        
+#     # CheckFailure goes LAST because it acts as the catch-all for custom checks
+#     elif isinstance(error, app_commands.CheckFailure):
+#         msg = "Initialization is not complete. Please try again later."
+        
+#     else:
+#         print(f"[DEBUG] Error: {error} | Removed active interaction for user {interaction.user.id}")
+#         cleanup_interaction(interaction.user.id)
+#         msg = "An error occurred while processing the command."
 
-@compare_models.error
-async def compare_models_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("Initialization is not complete. Please try again later.",
-                                                ephemeral=True)
-    else:
-        print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        cleanup_interaction(interaction.user.id)
-        await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
+#     # 2. Safely attempt to send the message
+#     try:
+#         print(f"[DEBUG] Attempting to send error message to {interaction.user.name}: {msg}")
+#         if interaction.response.is_done():
+#             # If already deferred/responded, use followup
+#             print(f"[DEBUG] Using followup to send message to {interaction.user.name}")
+#             await interaction.followup.send(msg, ephemeral=True)
+#         else:
+#             print(f"[DEBUG] Using standard response to send message to {interaction.user.name}")
+#             # If not responded to yet, use standard response
+#             await interaction.response.send_message(msg, ephemeral=True)
+            
+#     except discord.errors.NotFound:
+#         # If we still get a 10062 error here, the interaction completely timed out (>3 seconds).
+#         # We catch it silently so it doesn't clutter the console traceback.
+#         print(f"[WARNING] Could not send error message to {interaction.user.name}. Interaction timed out.")
 
-@describe_data.error
-async def describe_data_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CheckFailure):
-        await interaction.response.send_message("Initialization is not complete. Please try again later.",
-                                                ephemeral=True)
-    else:
-        print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
-        cleanup_interaction(interaction.user.id)
-        await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
+# @compare_models.error
+# async def compare_models_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+#     if isinstance(error, app_commands.CheckFailure):
+#         await interaction.response.send_message("Initialization is not complete. Please try again later.",
+#                                                 ephemeral=True)
+#     else:
+#         print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
+#         cleanup_interaction(interaction.user.id)
+#         await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
+
+# @describe_data.error
+# async def describe_data_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+#     if isinstance(error, app_commands.CheckFailure):
+#         await interaction.response.send_message("Initialization is not complete. Please try again later.",
+#                                                 ephemeral=True)
+#     else:
+#         print(f"[DEBUG @ 628] Removed active interaction for user {interaction.user.id} due to invalid input.")
+#         cleanup_interaction(interaction.user.id)
+#         await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
 
 
 keep_alive()
