@@ -808,13 +808,13 @@ class DatasetInputView(View):
         except asyncio.TimeoutError:
             print("Manual input modal timed out.")
             cleanup_interaction(interaction.user.id)
-            self.complete_selection(exc=asyncio.TimeoutError("Manual input timed out."))
+            # self.complete_selection(exc=asyncio.TimeoutError("Manual input timed out."))
             
         except ValueError:
             # The modal caught a ValueError (e.g., bad formatting) and already notified the user
             print("User entered invalid manual data.")
             cleanup_interaction(interaction.user.id)
-            self.complete_selection(exc=ValueError("Invalid manual data."))
+            # self.complete_selection(exc=ValueError("Invalid manual data."))
 
 
 async def ask_for_dataset_via_menu(interaction: discord.Interaction, title: str, description: str) -> pd.DataFrame | None:
@@ -2108,8 +2108,12 @@ async def describe_data(interaction: discord.Interaction):
     
     if not await check_user_instances(interaction):
         return
+    
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except Exception as e:
+        print(f"[ERROR] Failed to defer interaction response for user {interaction.user.id}: {e}")
 
-    await interaction.response.defer(ephemeral=True)
     try:
         df = await ask_for_dataset_via_menu(
             interaction,
@@ -2139,7 +2143,11 @@ async def compare_models(interaction: discord.Interaction):
     if not await check_user_instances(interaction):
         return
 
-    await interaction.response.defer(ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except Exception as e:
+        print(f"[ERROR] Failed to defer interaction response for user {interaction.user.id}: {e}")
+
     try:
         df = await ask_for_dataset_via_menu(
             interaction,
