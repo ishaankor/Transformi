@@ -592,6 +592,66 @@ def compare_models_on_dataframe(df: pd.DataFrame, feature_col: str, label_col: s
         results[model_name] = {'mse': mse, 'r2': r2}
     return results
 
+class ManualDatasetModal(Modal, title="Manual Dataset Input"):
+    def __init__(self):
+        super().__init__(timeout=30)
+        
+        self.feature_input = TextInput(
+            label="Feature Values (X)", 
+            style=discord.TextStyle.paragraph, 
+            placeholder="e.g., 1, 2, 3, 4, 5", 
+            required=True
+        )
+        
+        self.label_input = TextInput(
+            label="Label Values (Y)", 
+            style=discord.TextStyle.paragraph, 
+            placeholder="e.g., 10, 20, 30, 40, 50", 
+            required=True
+        )
+        
+        self.add_item(self.feature_input)
+        self.add_item(self.label_input)
+        
+        self.response_future = asyncio.get_event_loop().create_future()
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            features = [float(x.strip()) for x in self.feature_input.value.split(',') if x.strip()]
+            labels = [float(x.strip()) for x in self.label_input.value.split(',') if x.strip()]
+            
+            if len(features) != len(labels):
+                raise ValueError(f"Length mismatch: {len(features)} features vs {len(labels)} labels.")
+            
+            if len(features) < 2:
+                raise ValueError("Please enter at least 2 data points to create a dataset.")
+
+            df = pd.DataFrame({'feature': features, 'label': labels})
+            
+            # await interaction.response.send_message("✅ Manual dataset created successfully!", ephemeral=True)
+            
+            await interaction.response.defer()
+            
+            if not self.response_future.done():
+                self.response_future.set_result(df)
+
+        except ValueError as e:
+            await interaction.response.edit_message(
+                embed=Embed(
+                    title="⚠️ Invalid Input! ⚠️",
+                    description=f"**You entered invalid input:** {e}\nPlease make sure you are only entering comma-separated numbers.",
+                    color=0xff0000
+                ),
+                view=None
+            )
+            if not self.response_future.done():
+                self.response_future.set_exception(e)
+            
+            # cleanup_interaction(interaction.user.id)
+
+    async def on_timeout(self):
+        if not self.response_future.done():
+            self.response_future.set_exception(asyncio.TimeoutError("Modal timed out."))
 
 class ModelTypeView(View):
     def __init__(self):
@@ -714,27 +774,47 @@ class DatasetInputView(View):
         self.stop()
         for item in self.children:
             item.disabled = True
-        await self.original_interaction.edit_original_response(view=self)
+        print("Generating random dataset...")
+        await interaction.response.edit_message(view=self)
+        # bot_state.active_interactions[interaction.user.id] = interaction.response
         num_samples = 100
         x = np.random.rand(num_samples)
         y = 3 * x + np.random.randn(num_samples) * 0.1
         df = pd.DataFrame({'feature': x, 'label': y})
+        print("Random dataset generated.")
         self.complete_selection(df=df)
+        print("Random dataset selection complete.")
+        # cleanup_interaction(interaction.user.id)
+        return 
 
     @discord.ui.button(label="Manual Input", style=discord.ButtonStyle.success)
     async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
         self.stop()
+        
+        modal = ManualDatasetModal()
+        await interaction.response.send_modal(modal)
+        
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
-        modal = ManualDatasetModal()
-        await interaction.response.send_modal(modal)
+        
         try:
             df = await asyncio.wait_for(modal.response_future, timeout=30)
+            print("Manual dataset successfully captured.")
+            
+            # Complete the selection, passing the new DataFrame into your ML workflow
             self.complete_selection(df=df)
+            
         except asyncio.TimeoutError:
+            print("Manual input modal timed out.")
             cleanup_interaction(interaction.user.id)
             self.complete_selection(exc=asyncio.TimeoutError("Manual input timed out."))
+            
+        except ValueError:
+            # The modal caught a ValueError (e.g., bad formatting) and already notified the user
+            print("User entered invalid manual data.")
+            cleanup_interaction(interaction.user.id)
+            self.complete_selection(exc=ValueError("Invalid manual data."))
 
 
 async def ask_for_dataset_via_menu(interaction: discord.Interaction, title: str, description: str) -> pd.DataFrame | None:
@@ -1617,6 +1697,7 @@ class GraphLRView(View):
         try:
             num_values = await asyncio.wait_for(modal.response_future, timeout=15)  # Wait max 5 min
             print(f"User entered: {num_values}")  # Optional logging
+            cleanup_interaction(interaction.user.id)  # Clean up active interaction on successful input
         except asyncio.TimeoutError:
             await self.original_interaction.edit_original_response(
                 embed=Embed(
@@ -1717,7 +1798,7 @@ class CreateNNView(View):
                     await message.delete()
                 except discord.errors.Forbidden as e:
                     print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
-                    await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
                     pass
             else:
                 invalid_reply_msg = await interaction.followup.send(f"{message.author.mention} {reason}", ephemeral=True)
@@ -1726,7 +1807,7 @@ class CreateNNView(View):
                     await message.delete()
                 except discord.errors.Forbidden as e:
                     print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
-                    await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
+                    # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
                     pass
 
 
@@ -2039,6 +2120,7 @@ async def describe_data(interaction: discord.Interaction):
             return
 
         embed = await asyncio.get_event_loop().run_in_executor(None, build_dataset_summary_embed, df)
+        print(f"[DEBUG @ 610] Built dataset summary embed for user {interaction.user.id}")
         files = []
         heatmap_saved = await asyncio.get_event_loop().run_in_executor(None, save_correlation_heatmap, df)
         if heatmap_saved:
@@ -2068,18 +2150,21 @@ async def compare_models(interaction: discord.Interaction):
             return
             cache_dataset(interaction.user.id, df)
 
-        try:
-            print(f"[DEBUG @ 617] Starting feature/label selection for user {interaction.user.id}")
-            selected = await select_feature_and_label(interaction, df)
-            if selected is None:
+        if list(df.columns) == ['feature', 'label']:
+            feature_col, label_col = 'feature', 'label'
+        else:
+            try:
+                print(f"[DEBUG @ 617] Starting feature/label selection for user {interaction.user.id}")
+                selected = await select_feature_and_label(interaction, df)
+                if selected is None:
+                    return
+                feature_col, label_col = selected
+            except Exception as exc:
+                await interaction.followup.send(f'Selection failed: {exc}', ephemeral=True)
+                print(f"[DEBUG @ 617] Removed active interaction for user {interaction.user.id} due to invalid input.")
+                cleanup_interaction(interaction.user.id)
                 return
-        except Exception as exc:
-            await interaction.followup.send(f'Selection failed: {exc}', ephemeral=True)
-            print(f"[DEBUG @ 617] Removed active interaction for user {interaction.user.id} due to invalid input.")
-            cleanup_interaction(interaction.user.id)
-            return
 
-        feature_col, label_col = selected
         await interaction.followup.send('Training models and comparing performance. This may take a moment...', ephemeral=True)
         try:
             results = await asyncio.get_event_loop().run_in_executor(None, compare_models_on_dataframe, df, feature_col, label_col)
@@ -2246,7 +2331,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 #     except discord.errors.NotFound:
 #         # If we still get a 10062 error here, the interaction completely timed out (>3 seconds).
 #         # We catch it silently so it doesn't clutter the console traceback.
-#         print(f"[WARNING] Could not send error message to {interaction.user.name}. Interaction timed out.")
+#         print(f"[WARNING] Could not send error message to {interaction.user.name}. In/teraction timed out.")
 
 # @compare_models.error
 # async def compare_models_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
