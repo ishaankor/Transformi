@@ -1373,10 +1373,15 @@ def train_neural_network(df, feature_cols, label_col, model_params=None):
             print(f"Training MAE: {train_metric:.4f}, Validation MAE: {val_metric:.4f}")
         
         print("Saving model architecture...")
-        tf.keras.utils.plot_model(model, to_file='model_architecture.png', 
-                                show_shapes=True, show_layer_names=True, 
-                                rankdir='TB', dpi=150)
-        print("Model architecture saved successfully!")
+        try:
+            tf.keras.utils.plot_model(model, to_file='model_architecture.png', 
+                                    show_shapes=True, show_layer_names=True, 
+                                    rankdir='TB', dpi=150)
+            print("Model architecture saved successfully!")
+        except ImportError as e:
+            print(f"Skipping architecture plot (Graphviz not installed): {e}")
+        except Exception as e:
+            print(f"Failed to save architecture plot: {e}")
         
         def cleanup_files():
             try:
