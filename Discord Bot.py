@@ -616,6 +616,8 @@ class ManualDatasetModal(Modal, title="Manual Dataset Input"):
         self.response_future = asyncio.get_event_loop().create_future()
 
     async def on_submit(self, interaction: discord.Interaction):
+        # NO self.stop() here! Modals don't support it, and it was causing the crash.
+        print("Received manual dataset input, processing...")
         try:
             features = [float(x.strip()) for x in self.feature_input.value.split(',') if x.strip()]
             labels = [float(x.strip()) for x in self.label_input.value.split(',') if x.strip()]
@@ -628,14 +630,15 @@ class ManualDatasetModal(Modal, title="Manual Dataset Input"):
 
             df = pd.DataFrame({'feature': features, 'label': labels})
             
-            # await interaction.response.send_message("✅ Manual dataset created successfully!", ephemeral=True)
-            
+            # If successful, just defer to close the modal smoothly
             await interaction.response.defer()
             
             if not self.response_future.done():
                 self.response_future.set_result(df)
 
         except ValueError as e:
+            # Since we didn't crash on self.stop(), this will now successfully 
+            # edit the original message that had the button on it!
             await interaction.response.edit_message(
                 embed=Embed(
                     title="⚠️ Invalid Input! ⚠️",
@@ -644,11 +647,14 @@ class ManualDatasetModal(Modal, title="Manual Dataset Input"):
                 ),
                 view=None
             )
+
+            print(f"Error processing manual dataset input: {e}")
+            
+            # This safely tells the parent view to abort, preventing the "Timed Out" screen.
             if not self.response_future.done():
+                print("Setting exception on response future due to invalid input.")
                 self.response_future.set_exception(e)
             
-            # cleanup_interaction(interaction.user.id)
-
     async def on_timeout(self):
         if not self.response_future.done():
             self.response_future.set_exception(asyncio.TimeoutError("Modal timed out."))
@@ -797,24 +803,22 @@ class DatasetInputView(View):
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
-        
+    
         try:
             df = await asyncio.wait_for(modal.response_future, timeout=30)
             print("Manual dataset successfully captured.")
             
-            # Complete the selection, passing the new DataFrame into your ML workflow
             self.complete_selection(df=df)
             
         except asyncio.TimeoutError:
             print("Manual input modal timed out.")
             cleanup_interaction(interaction.user.id)
-            # self.complete_selection(exc=asyncio.TimeoutError("Manual input timed out."))
+            self.complete_selection(exc=asyncio.TimeoutError("Manual input timed out."))
             
         except ValueError:
-            # The modal caught a ValueError (e.g., bad formatting) and already notified the user
             print("User entered invalid manual data.")
             cleanup_interaction(interaction.user.id)
-            # self.complete_selection(exc=ValueError("Invalid manual data."))
+            self.complete_selection(exc=ValueError("Invalid manual data."))
 
 
 async def ask_for_dataset_via_menu(interaction: discord.Interaction, title: str, description: str) -> pd.DataFrame | None:
@@ -824,10 +828,14 @@ async def ask_for_dataset_via_menu(interaction: discord.Interaction, title: str,
         view=view,
         ephemeral=True
     )
+    df = 0
     try:
         df = await asyncio.wait_for(view.selected_df, timeout=30)
+        # print(df)
         return df
     except asyncio.TimeoutError:
+        print("Dataset selection timed out.")
+        # print(df)
         await interaction.edit_original_response(
             embed=Embed(
                 title="⏱️ Timed Out! ⏱️",
@@ -836,6 +844,9 @@ async def ask_for_dataset_via_menu(interaction: discord.Interaction, title: str,
             ),
             view=None
         )
+        return None
+    except ValueError as e:
+        print(f"Error processing dataset input: {e}")
         return None
 
 
@@ -1399,7 +1410,7 @@ def train_neural_network(df, feature_cols, label_col, model_params=None):
         cleanup_timer.start()
         
         print("Neural network training completed successfully!")
-        return model, history, scaler.history
+        return model, history, scaler
         
     except Exception as e:
         print(f"Error during neural network training: {e}")
