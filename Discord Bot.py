@@ -1986,7 +1986,7 @@ class CreateNNView(View):
 
         await interaction.followup.send(
             "Training the neural network with your selected dataset. This may take a while...",
-            ephemeral=True, delete_after=5
+            ephemeral=True,
         )
 
         loop = asyncio.get_running_loop()
