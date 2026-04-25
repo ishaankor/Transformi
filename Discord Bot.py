@@ -2297,7 +2297,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True, delete_after=10)
+            await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.response.send_message(msg, ephemeral=True, delete_after=10)
     except discord.errors.NotFound:
