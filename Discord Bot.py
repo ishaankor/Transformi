@@ -567,6 +567,7 @@ def train_model_on_dataframe(df: pd.DataFrame, feature_col: str, label_col: str,
     y = numeric_df[label_col].values
 
     if len(X) < 5:
+        print(f"Dataset has only {len(X)} rows after filtering for numeric columns. Minimum 5 rows required.")
         raise ValueError('Dataset must contain at least 5 rows for training.')
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -588,8 +589,12 @@ def train_model_on_dataframe(df: pd.DataFrame, feature_col: str, label_col: str,
 def compare_models_on_dataframe(df: pd.DataFrame, feature_col: str, label_col: str) -> dict:
     results = {}
     for model_name in ['linear', 'decision_tree', 'random_forest']:
-        model, mse, r2 = train_model_on_dataframe(df, feature_col, label_col, model_name)
-        results[model_name] = {'mse': mse, 'r2': r2}
+        try:
+            model, mse, r2 = train_model_on_dataframe(df, feature_col, label_col, model_name)
+            results[model_name] = {'mse': mse, 'r2': r2}
+        except ValueError as e:
+            print(f"Error occurred while training {model_name} model: {e}")
+            raise ValueError(f"Error with {model_name} model: {e}")
     return results
 
 class ManualDatasetModal(Modal, title="Manual Dataset Input"):
@@ -642,7 +647,7 @@ class ManualDatasetModal(Modal, title="Manual Dataset Input"):
             await interaction.response.edit_message(
                 embed=Embed(
                     title="⚠️ Invalid Input! ⚠️",
-                    description=f"**You entered invalid input:** {e}\nPlease make sure you are only entering comma-separated numbers.",
+                    description=f"**Please make sure you are only entering comma-separated numbers!",
                     color=0xff0000
                 ),
                 view=None
@@ -703,9 +708,9 @@ class ModelTypeView(View):
             df = pd.DataFrame({'feature': features, 'label': labels})
             if not self.response_future.done():
                 self.response_future.set_result(df)
-            await interaction.response.send_message("Dataset created successfully.", ephemeral=True)
+            # await interaction.response.send_message("Dataset created successfully.", ephemeral=True, delete_after=5)
         except ValueError as e:
-            await interaction.response.send_message(f"Invalid input: {e}", ephemeral=True)
+            # await interaction.response.send_message(f"Invalid input: {e}", ephemeral=True)
             if not self.response_future.done():
                 self.response_future.set_exception(e)
 
@@ -1524,8 +1529,8 @@ class GraphLRView(View):
             print(f"Invalid reply received: {message.content} - Reason: {reason}")
             if interaction.response.is_done():
                 print("Interaction response already sent, using followup for invalid reply.")
-                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
-                await invalid_reply_msg.delete(delay=5)
+                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True, delete_after=5)
+                # await invalid_reply_msg.delete(delay=5)
                 try:
                     await message.delete()
                 except discord.errors.Forbidden as e:
@@ -1534,8 +1539,8 @@ class GraphLRView(View):
                     pass
             else:
                 print("Sending initial interaction response for invalid reply.")
-                invalid_reply_msg = await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True)
-                await invalid_reply_msg.delete(delay=5)
+                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True, delete_after=5)
+                # await invalid_reply_msg.delete(delay=5)
                 try:
                     await message.delete()
                 except discord.errors.Forbidden as e:
@@ -1981,7 +1986,7 @@ class CreateNNView(View):
 
         await interaction.followup.send(
             "Training the neural network with your selected dataset. This may take a while...",
-            ephemeral=True
+            ephemeral=True, delete_after=5
         )
 
         loop = asyncio.get_running_loop()
@@ -2001,12 +2006,12 @@ class CreateNNView(View):
                     color=0x00ff00
                 )
                 
-                if 'accuracy' in history:
-                    embed.add_field(name="Training Accuracy", value=f"{history['accuracy'][-1]:.4f}", inline=True)
-                    embed.add_field(name="Validation Accuracy", value=f"{history['val_accuracy'][-1]:.4f}", inline=True)
+                if 'accuracy' in history.history:
+                    embed.add_field(name="Training Accuracy", value=f"{history.history['accuracy'][-1]:.4f}", inline=True)
+                    embed.add_field(name="Validation Accuracy", value=f"{history.history['val_accuracy'][-1]:.4f}", inline=True)
                 else:
-                    embed.add_field(name="Training MAE", value=f"{history['mae'][-1]:.4f}", inline=True)
-                    embed.add_field(name="Validation MAE", value=f"{history['val_mae'][-1]:.4f}", inline=True)
+                    embed.add_field(name="Training MAE", value=f"{history.history['mae'][-1]:.4f}", inline=True)
+                    embed.add_field(name="Validation MAE", value=f"{history.history['val_mae'][-1]:.4f}", inline=True)
                 
                 await interaction.followup.send(embed=embed, files=files, ephemeral=True)
                 
@@ -2050,7 +2055,7 @@ async def interaction_perm_check(interaction: discord.Interaction):
     elif not interaction_user_perms.attach_files:
         await interaction.response.send_message(
             "You lack the **'Attach Files'** permission to upload a CSV file! Please run the command again in a channel where you have that permission, or direct message me!",
-            ephemeral=True)
+            ephemeral=True, delete_after=10)
         print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
         cleanup_interaction(interaction.user.id)
         # bot_state.graphlr_active_interactions.discard(interaction)
@@ -2058,7 +2063,7 @@ async def interaction_perm_check(interaction: discord.Interaction):
     elif not interaction_bot_perms.attach_files:
         await interaction.response.send_message(
             "I lack the **'Attach Files'** permission to receive a CSV file! Please run the command again in a channel where I have that permission, or direct message me!",
-            ephemeral=True)
+            ephemeral=True, delete_after=10)
         print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
         cleanup_interaction(interaction.user.id)
         # bot_state.graphlr_active_interactions.discard(interaction)
@@ -2107,7 +2112,7 @@ async def check_user_instances(interaction: discord.Interaction):
     if user_id in bot_state.active_interactions.keys():
         await interaction.response.send_message(
             "You already have an active interaction! Please complete it before starting a new one.",
-            ephemeral=True
+            ephemeral=True, delete_after=10
         )
         return False    
     
@@ -2189,13 +2194,22 @@ async def compare_models(interaction: discord.Interaction):
                 cleanup_interaction(interaction.user.id)
                 return
 
-        await interaction.followup.send('Training models and comparing performance. This may take a moment...', ephemeral=True)
         try:
             results = await asyncio.get_event_loop().run_in_executor(None, compare_models_on_dataframe, df, feature_col, label_col)
+            await interaction.followup.send('Training models and comparing performance. This may take a moment...', ephemeral=True)
             embed = compare_models_embed(results, feature_col, label_col)
             await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as exc:
-            await interaction.followup.send(f'Comparison failed: {exc}', ephemeral=True)
+        except ValueError as exc:
+            print(f"Error during model comparison for user {interaction.user.id}: {exc}")
+            await interaction.edit_original_response(
+                embed=Embed(
+                    title="⚠️ Invalid Input! ⚠️",
+                    description=f"Please ensure your dataset has more than **5** numeric feature and label columns!",
+                    color=0xff0000
+                ),
+                view=None
+            )
+            # await interaction.edit_original_response(f'Comparison failed: {exc}', ephemeral=True)
     finally:
         cleanup_interaction(interaction.user.id)
 
@@ -2265,7 +2279,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         missing_bot = ", ".join(error.missing_permissions)
         msg = f"❌ You are missing the following permissions: `{missing_user}`\n❌ I am missing the following permissions to execute this: `{missing_bot}`"
 
-    # 2. Specific Permissions Checks
     elif isinstance(error, app_commands.MissingPermissions):
         missing = ", ".join(error.missing_permissions)
         msg = f"❌ You are missing the following permissions: `{missing}`"
@@ -2275,21 +2288,18 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         msg = f"❌ I am missing the following permissions to execute this: `{missing}`"
 
 
-    # 3. Broad Checks (Catch custom checks like initialization_check)
     elif isinstance(error, app_commands.CheckFailure):
         msg = "Initialization is not complete. Please try again later."
 
-    # 4. Fallback for anything else
     else:
         msg = "An unexpected error occurred while processing the command."
         print(f"[ERROR] Unhandled exception: {error}")
 
-    # 5. Safely attempt to respond to the user
     try:
         if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
+            await interaction.followup.send(msg, ephemeral=True, delete_after=10)
         else:
-            await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.response.send_message(msg, ephemeral=True, delete_after=10)
     except discord.errors.NotFound:
         # Failsafe in case the interaction died EXACTLY as this block executed
         pass
