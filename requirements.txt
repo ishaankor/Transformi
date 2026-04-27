@@ -16,3 +16,4 @@ aiohttp==3.8.5
 certifi==2022.12.7
 pydot==2.0.0
 graphviz==0.20.3
+kaggle==1.5.12
