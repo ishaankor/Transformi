@@ -1,4 +1,7 @@
 import os
+import glob
+import tempfile
+import io
 import sys
 import asyncio
 import random
@@ -10,6 +13,8 @@ import concurrent.futures
 import matplotlib.pyplot as plt
 import pickle
 from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 # from tensorflow.keras import utils
 from sklearn.datasets import make_classification
@@ -22,6 +27,16 @@ import seaborn as sns
 import discord
 from discord.ext import commands
 from discord import app_commands
+import matplotlib.patches as patches
+import discord
+from enum import Enum
+from sklearn.linear_model import LinearRegression
+from discord.ui import Select, View, Button, Modal, TextInput
+from discord import Intents, File, Embed
+from dotenv import load_dotenv
+from keep_alive import keep_alive
+import ssl
+import certifi
 import threading
 import time
 import socket
@@ -33,26 +48,7 @@ tf.config.threading.set_inter_op_parallelism_threads(2)
 
 tf.config.set_visible_devices([], 'GPU')
 
-import matplotlib.patches as patches
-import discord
-from enum import Enum
-from sklearn.linear_model import LinearRegression
-from discord.ext import commands
-from discord import app_commands
-from discord.ui import Select, View, Button, Modal, TextInput
-from discord import Intents, File, Embed
-from dotenv import load_dotenv
-import asyncio
-import random
-import numpy as np
-from discord import File
-from discord.ui import Modal, TextInput
-from sklearn.linear_model import LinearRegression
-from keep_alive import keep_alive
-from discord.ui import Modal, TextInput
 
-import ssl
-import certifi
 try:
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     ssl._create_default_https_context = lambda: ssl_context
@@ -415,19 +411,18 @@ async def request_dataset_csv(interaction: discord.Interaction, prompt_text: str
                 await invalid_reply_msg.delete(delay=5)
                 try:
                     await message.delete()
-                except Exception as e:
-                    print(f"DONE: Failed to delete message due to lack of permissions or in DMs, skipping cleanup. Error: {e}")
-                    # print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                except discord.errors.Forbidden as e:
+                    print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
                     # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
                     pass
             else:
-                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention} {reason}", ephemeral=True)
-                await invalid_reply_msg.delete(delay=5)
+                print("Sending initial interaction response for invalid reply.")
+                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True, delete_after=5)
+                # await invalid_reply_msg.delete(delay=5)
                 try:
                     await message.delete()
-                except Exception as e:
-                    print(f"CONTINUING: Failed to delete message due to lack of permissions or in DMs, skipping cleanup. Error: {e}")
-                    # print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
+                except discord.errors.Forbidden as e:
+                    print("Failed to delete message due to lack of permissions or in DMs, skipping cleanup.")
                     # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
                     pass
 
@@ -647,7 +642,7 @@ class ManualDatasetModal(Modal, title="Manual Dataset Input"):
             await interaction.response.edit_message(
                 embed=Embed(
                     title="⚠️ Invalid Input! ⚠️",
-                    description=f"**Please make sure you are only entering comma-separated numbers!",
+                    description=f"**Please make sure you are only entering comma-separated numbers!**",
                     color=0xff0000
                 ),
                 view=None
@@ -1430,7 +1425,60 @@ async def train(ctx):
         result = await loop.run_in_executor(pool, train_neural_network)
         return result
 
+async def calculate_linear_regression(interaction: discord.Interaction, df: pd.DataFrame, feature_col: str, label_col: str):
+    """Calculates linear regression, plots it in memory, and sends it to Discord."""
+    
+    await interaction.followup.send(
+        f"Calculating linear regression for **{feature_col}** ➡️ **{label_col}**...", 
+        ephemeral=True
+    )
 
+    def compute_and_plot():        
+        plt.switch_backend('Agg')
+        
+        X = df[feature_col].values.reshape(-1, 1)
+        y = df[label_col].values
+        
+        reg = LinearRegression().fit(X, y)
+        predictions = reg.predict(X)
+        r2_score = reg.score(X, y)
+        slope = reg.coef_[0]
+        intercept = reg.intercept_
+        
+        plt.figure(figsize=(8, 6))
+        plt.scatter(X, y, color="g", alpha=0.5, label="Data Points")
+        plt.plot(X, predictions, color="k", linewidth=2, label=f"Best Fit Line (R² = {r2_score:.4f})")
+        
+        plt.xlabel(feature_col)
+        plt.ylabel(label_col)
+        plt.title(f"Linear Regression: {feature_col} vs {label_col}")
+        plt.legend()
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0) 
+        plt.close()
+        
+        return buf, r2_score, slope, intercept
+
+    try:
+        loop = asyncio.get_running_loop()
+        buf, r2, slope, intercept = await loop.run_in_executor(None, compute_and_plot)
+
+        plot_file = File(fp=buf, filename="regression.png")
+        
+        embed = Embed(
+            title="📈 Linear Regression Results",
+            description=f"**Equation:** `y = {slope:.4f}x + {intercept:.4f}`\n**R² Score:** `{r2:.4f}`",
+            color=0x00ff00
+        )
+        embed.set_image(url="attachment://regression.png")
+
+        await interaction.followup.send(embed=embed, file=plot_file, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"An error occurred during calculation: {e}", ephemeral=True)
+    
 class GraphLRView(View):
     def __init__(self, original_interaction):
         super().__init__(timeout=30)
@@ -1466,42 +1514,148 @@ class GraphLRView(View):
         return
 
 
-    @discord.ui.button(emoji="1️⃣", label="Random Values", style=discord.ButtonStyle.primary)
-    async def button_callback(self, interaction: discord.Interaction, button: Button):
-        """Opens the modal and properly handles timeouts and cancellations."""
-        self.stop()  # Stop the view to prevent multiple interactions
+    @discord.ui.button(emoji="1️⃣", label="Random Dataset", style=discord.ButtonStyle.primary)
+    async def random_data_callback(self, interaction: discord.Interaction, button: Button):
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
 
-        modal = RNGModal()
-        await interaction.response.send_modal(modal)
-
-        # for item in self.children:
-        #     item.disabled = True
-        # await self.original_interaction.edit_original_response(
-        #     embed=Embed(title="How would you like to display your dataset?",
-        #                 description="1️⃣ Random Dataset Generator \n 2️⃣ Dataset File \n 3️⃣ Given Values/Arrays"), view=self)
+        await interaction.response.send_message(
+            f"{interaction.user.mention}, fetching a random dataset from Kaggle... ⏳", 
+            ephemeral=True, delete_after=10
+        )
+        # dataset_prompt = await interaction.original_response()
 
         try:
-            num_values = await asyncio.wait_for(modal.response_future, timeout=15)  # Wait max 5 min
-            print(f"User entered: {num_values}")  # Optional logging
-            cleanup_interaction(interaction.user.id)  # Clean up active interaction on successful input
-        except asyncio.TimeoutError:
-            # cleanup_interaction(self.original_interaction.user.id)
-            await self.original_interaction.edit_original_response(
-                embed=Embed(
-                    title="⏱️ Selection Timed Out",
-                    description="**You didn't respond in time!** Please run the command again.",
-                    color=0xff0000
-                ),
-                view=None
-            )
-            print(f"[DEBUG @ 289] Removed active interaction for user {interaction.user.id} due to invalid input.")
-            cleanup_interaction(interaction.user.id)
-        except ValueError:
-            pass
+            from kaggle.api.kaggle_api_extended import KaggleApi
+            api = KaggleApi()
+            api.authenticate()
+            
+            def search_kaggle(query: str):
+                """Searches Kaggle and returns the top 5 datasets."""
+                # We restrict the search to CSVs to avoid downloading images/audio
+                datasets = api.dataset_list(search=query, file_type='csv', sort_by='votes')
+                
+                results = []
+                for ds in datasets[:25]:
+                    results.append({
+                        "title": ds.title,
+                        "ref": ds.ref, # The ID needed to download it (e.g., 'zillow/zecon')
+                        # "size": ds.size
+                    })
+                return results
 
+            print("Searching Kaggle for datasets...")
+            datasets = search_kaggle("linear regression")
+            if not datasets:
+                await interaction.followup.send("No datasets found on Kaggle.", ephemeral=True)
+                cleanup_interaction(interaction.user.id)
+                return
+
+            numeric_df = None
+            dataset_ref = ""
+
+            max_attempts = 5
+            for _ in range(max_attempts):
+                chosen_dataset = random.choice(datasets)
+                dataset_ref = chosen_dataset['ref']
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    api.dataset_download_files(dataset_ref, path=temp_dir, unzip=True)
+                    csv_files = glob.glob(os.path.join(temp_dir, '**', '*.csv'), recursive=True)
+                    
+                    if not csv_files:
+                        continue 
+                    
+                    df = pd.read_csv(csv_files[0], engine="pyarrow")
+                    
+                    temp_numeric_df = get_numeric_dataframe(df)
+                    
+                    if temp_numeric_df.shape[1] >= 2:
+                        numeric_df = temp_numeric_df
+                        break
+
+            if numeric_df is None:
+                await interaction.followup.send("Could not find a random dataset with at least 2 numeric columns after 5 attempts. Try again!", ephemeral=True)
+                cleanup_interaction(interaction.user.id)
+                return
+
+            if len(numeric_df) > 1000:
+                numeric_df = numeric_df.sample(n=1000, random_state=42)
+
+            if numeric_df.shape[1] > 25:
+                max_columns_msg = await interaction.followup.send(
+                    f"The dataset `{dataset_ref}` has >25 numeric columns. Using the first 25 for selection.",
+                    ephemeral=True
+                )
+                numeric_df = numeric_df.iloc[:, :25]
+
+            feature_view = DatasetView(numeric_df, 1)
+            label_view = DatasetView(numeric_df, 2)
+            
+            feature_msg = await interaction.followup.send(
+                content=f'**Dataset:** `{dataset_ref}`\nSelect the feature column to use as input.',
+                view=feature_view,
+                ephemeral=True
+            )
+            label_msg = await interaction.followup.send(
+                content='Select the target column to predict.',
+                view=label_view,
+                ephemeral=True
+            )
+
+            try:
+                selected_feature, selected_label = await asyncio.gather(
+                    feature_view.selected_option,
+                    label_view.selected_option
+                )
+
+            except asyncio.TimeoutError:
+                await feature_msg.delete()
+                await label_msg.delete()
+                
+                if 'max_columns_msg' in locals():
+                    try:
+                        await max_columns_msg.delete()
+                    except Exception as e:
+                        pass
+
+                await self.original_interaction.edit_original_response(
+                        embed=Embed(
+                            title="⏱️ Timed Out! ⏱️",
+                            description="**You didn't select a feature and label in time!** Please run the command again.",
+                            color=0xff0000,
+                        ),
+                        view=None
+                )
+                cleanup_interaction(interaction.user.id)
+                return None
+
+            if selected_feature == selected_label:
+                same_feature_label_msg = await interaction.followup.send('Feature and target columns must be different.', ephemeral=True)
+                await same_feature_label_msg.delete(delay=5)
+                cleanup_interaction(interaction.user.id)
+                return None
+            
+            self.selected_data = df[[selected_feature, selected_label]]
+            
+            if 'max_columns_msg' in locals():
+                try:
+                    await max_columns_msg.delete()
+                except Exception as e:
+                    pass
+
+            await feature_msg.delete()
+            await label_msg.delete()
+            # await dataset_prompt.delete()
+            
+            await calculate_linear_regression(interaction, self.selected_data, selected_feature, selected_label)
+            cleanup_interaction(interaction.user.id)
+
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while fetching the dataset: {e}", ephemeral=True)
+            cleanup_interaction(interaction.user.id)
 
     @discord.ui.button(emoji="2️⃣", label="Dataset File (CSV)", style=discord.ButtonStyle.primary)
     async def second_button_callback(self, interaction: discord.Interaction, button: Button):
@@ -1529,8 +1683,8 @@ class GraphLRView(View):
             print(f"Invalid reply received: {message.content} - Reason: {reason}")
             if interaction.response.is_done():
                 print("Interaction response already sent, using followup for invalid reply.")
-                await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True, delete_after=5)
-                # await invalid_reply_msg.delete(delay=5)
+                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention}, {reason}", ephemeral=True)
+                await invalid_reply_msg.delete(delay=5)
                 try:
                     await message.delete()
                 except discord.errors.Forbidden as e:
@@ -1718,7 +1872,7 @@ class GraphLRView(View):
         try:
             num_values = await asyncio.wait_for(modal.response_future, timeout=15)  # Wait max 5 min
             print(f"User entered: {num_values}")  # Optional logging
-            cleanup_interaction(interaction.user.id)  # Clean up active interaction on successful input
+            # cleanup_interaction(interaction.user.id)  # Clean up active interaction on successful input
         except asyncio.TimeoutError:
             await self.original_interaction.edit_original_response(
                 embed=Embed(
@@ -1734,6 +1888,83 @@ class GraphLRView(View):
         except ValueError:
             pass
 
+async def calculate_neural_network(interaction: discord.Interaction, df: pd.DataFrame, feature_cols: list[str], label_col: str):
+    """Calculates neural network regression, plots Actual vs Predicted in memory, and sends to Discord."""
+    
+    # features_str = "".join(feature_cols)
+    print(f"Calculating neural network for features {feature_cols} and label {label_col}...")
+    await interaction.followup.send(
+        f"Training Neural Network for **{feature_cols}** ➡️ **{label_col}**...", 
+        ephemeral=True
+    )
+
+    def compute_and_plot():        
+        
+        plt.switch_backend('Agg')
+        
+        X = df[feature_cols].values.reshape(-1, 1)
+        y = df[label_col].values
+        
+        scaler_X = StandardScaler()
+        X_scaled = scaler_X.fit_transform(X)
+        
+        nn = MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=1000, random_state=42)
+        nn.fit(X_scaled, y)
+        
+        predictions = nn.predict(X_scaled)
+        r2 = r2_score(y, predictions)
+        mse = mean_squared_error(y, predictions)
+        
+        # Create a figure with 2 subplots side-by-side
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        
+        # --- Plot 1: Actual vs Predicted ---
+        ax1.scatter(y, predictions, color="purple", alpha=0.5, label="Model Predictions")
+        min_val = min(y.min(), predictions.min())
+        max_val = max(y.max(), predictions.max())
+        ax1.plot([min_val, max_val], [min_val, max_val], color="k", linestyle="--", linewidth=2, label="Perfect Fit Line")
+        
+        ax1.set_xlabel(f"Actual {label_col}")
+        ax1.set_ylabel(f"Predicted {label_col}")
+        ax1.set_title(f"Prediction Accuracy: {label_col}")
+        ax1.legend()
+        ax1.grid(True, linestyle=':', alpha=0.6)
+
+        # --- Plot 2: The Neural Network's Loss Curve ---
+        # This visualizes the network's internal learning process
+        ax2.plot(nn.loss_curve_, color="blue", linewidth=2)
+        ax2.set_xlabel("Training Iterations (Epochs)")
+        ax2.set_ylabel("Loss (Error)")
+        ax2.set_title("Network Learning Process (Loss Curve)")
+        ax2.grid(True, linestyle=':', alpha=0.6)
+        
+        plt.tight_layout() # Ensures the plots don't overlap
+        
+        # Save to buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0) 
+        plt.close()
+        
+        return buf, r2, mse
+
+    try:
+        loop = asyncio.get_running_loop()
+        buf, r2, mse = await loop.run_in_executor(None, compute_and_plot)
+
+        plot_file = File(fp=buf, filename="nn_regression.png")
+        
+        embed = Embed(
+            title="🧠 Neural Network Results",
+            description=f"**Target Variable:** `{label_col}`\n**R² Score:** `{r2:.4f}`\n**Mean Squared Error:** `{mse:.4f}`",
+            color=0x9b59b6
+        )
+        embed.set_image(url="attachment://nn_regression.png")
+
+        await interaction.followup.send(embed=embed, file=plot_file, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"An error occurred during calculation: {e}", ephemeral=True)
 
 class CreateNNView(View):
     def __init__(self, original_interaction):
@@ -1773,22 +2004,143 @@ class CreateNNView(View):
 
     @discord.ui.button(emoji="1️⃣", label="Random Dataset", style=discord.ButtonStyle.primary)
     async def random_data_callback(self, interaction: discord.Interaction, button: Button):
-        self.stop()  # Stop the view to prevent multiple interactions
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
 
-        await interaction.response.defer(ephemeral=True)
-        bot_state.active_interactions[interaction.user.id] = interaction.response
+        await interaction.response.send_message(
+            f"{interaction.user.mention}, fetching a random dataset from Kaggle... ⏳\n*(This takes a moment to download and unzip in the background!)*", 
+            ephemeral=True, delete_after=10
+        )
 
-        num_samples = 1000
-        x_axis = np.random.rand(num_samples, 1)
-        y_axis = (3 * x_axis + np.random.randn(num_samples, 1) * 0.1).flatten()
+        loop = asyncio.get_running_loop()
 
-        df = pd.DataFrame({"Feature": x_axis.flatten(), "Label": y_axis})
-        self.selected_data = df
+        def fetch_and_process_dataset():
+            from kaggle.api.kaggle_api_extended import KaggleApi
+            api = KaggleApi()
+            api.authenticate()
 
-        await self.start_training(interaction, df, ['Feature'], 'Label')
+            search_topics = [
+                "regression", 
+                "salary predict", 
+                "housing prices", 
+                "insurance costs", 
+                "sales forecasting",
+                "weather numerical"
+            ]
+            query = random.choice(search_topics)
+
+            datasets = api.dataset_list(max_size=5_000_000, file_type='csv', sort_by='votes', search=query)
+            results = list(datasets[:25])
+
+            if not results:
+                return None, None, None, "No datasets found on Kaggle."
+
+            max_attempts = 5
+            for _ in range(max_attempts):
+                chosen_dataset = random.choice(results)
+                dataset_ref = chosen_dataset.ref
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    api.dataset_download_files(dataset_ref, path=temp_dir, unzip=True)
+                    csv_files = glob.glob(os.path.join(temp_dir, '**', '*.csv'), recursive=True)
+                    
+                    if not csv_files:
+                        continue 
+                    
+                    df = pd.read_csv(csv_files[0], engine="pyarrow")
+                    temp_numeric_df = get_numeric_dataframe(df)
+                    
+                    if temp_numeric_df.shape[1] >= 2:
+                        return df, temp_numeric_df, dataset_ref, None
+
+            return None, None, None, "Could not find a random dataset with at least 2 numeric columns after 5 attempts. Try again!"
+
+        try:
+            df, numeric_df, dataset_ref, error_msg = await loop.run_in_executor(None, fetch_and_process_dataset)
+
+            if error_msg:
+                await interaction.followup.send(error_msg, ephemeral=True)
+                cleanup_interaction(interaction.user.id)
+                return
+
+            if len(numeric_df) > 1000:
+                numeric_df = numeric_df.sample(n=1000, random_state=42)
+
+            if numeric_df.shape[1] > 25:
+                max_columns_msg = await interaction.followup.send(
+                    f"The dataset `{dataset_ref}` has >25 numeric columns. Using the first 25 for selection.",
+                    ephemeral=True
+                )
+                numeric_df = numeric_df.iloc[:, :25]
+
+            feature_view = DatasetView(numeric_df, 1)
+            label_view = DatasetView(numeric_df, 2) 
+            
+            feature_msg = await interaction.followup.send(
+                content=f'**Dataset:** `{dataset_ref}`\nSelect the feature column to use as input.',
+                view=feature_view,
+                ephemeral=True
+            )
+            label_msg = await interaction.followup.send(
+                content='Select the target column to predict.',
+                view=label_view,
+                ephemeral=True
+            )
+
+            try:
+                selected_feature, selected_label = await asyncio.gather(
+                    feature_view.selected_option,
+                    label_view.selected_option
+                )
+
+            except asyncio.TimeoutError:
+                await feature_msg.delete()
+                await label_msg.delete()
+                
+                if 'max_columns_msg' in locals():
+                    try:
+                        await max_columns_msg.delete()
+                    except Exception as e:
+                        pass
+
+                await self.original_interaction.edit_original_response(
+                        embed=Embed(
+                            title="⏱️ Timed Out! ⏱️",
+                            description="**You didn't select a feature and label in time!** Please run the command again.",
+                            color=0xff0000,
+                        ),
+                        view=None
+                )
+                cleanup_interaction(interaction.user.id)
+                return None
+
+            if selected_feature == selected_label:
+                same_feature_label_msg = await interaction.followup.send('Feature and target columns must be different.', ephemeral=True)
+                await same_feature_label_msg.delete(delay=5)
+                cleanup_interaction(interaction.user.id)
+                return None
+            
+            # Save selected data and cleanup UI
+            self.selected_data = df[[selected_feature, selected_label]]
+            
+            if 'max_columns_msg' in locals():
+                try:
+                    await max_columns_msg.delete()
+                except Exception as e:
+                    pass
+
+            await feature_msg.delete()
+            await label_msg.delete()
+            
+            # Pass to the Neural Network function
+            await calculate_neural_network(interaction, self.selected_data, selected_feature, selected_label)
+            cleanup_interaction(interaction.user.id)
+
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while fetching the dataset: {e}", ephemeral=True)
+            cleanup_interaction(interaction.user.id)
 
     @discord.ui.button(emoji="2️⃣", label="Dataset File", style=discord.ButtonStyle.primary)
     async def upload_csv_callback(self, interaction: discord.Interaction, button: Button):
@@ -1822,8 +2174,9 @@ class CreateNNView(View):
                     # await interaction.followup.send(f"{message.author.mention}, I can't delete messages!", ephemeral=True)
                     pass
             else:
-                invalid_reply_msg = await interaction.followup.send(f"{message.author.mention} {reason}", ephemeral=True)
-                await invalid_reply_msg.delete(delay=5)
+                print("Sending initial interaction response for invalid reply.")
+                await interaction.response.send_message(f"{message.author.mention} {reason}", ephemeral=True, delete_after=5)
+                # await invalid_reply_msg.delete(delay=5)
                 try:
                     await message.delete()
                 except discord.errors.Forbidden as e:
@@ -1962,7 +2315,8 @@ class CreateNNView(View):
                     print(f"Failed to delete max_columns_msg: {e}")
                 await feature_msg.delete()
                 await label_msg.delete()
-                await self.start_training(interaction, self.selected_data, [selected_feature], selected_label)
+                await calculate_neural_network(interaction, self.selected_data, selected_feature, selected_label)
+                cleanup_interaction(interaction.user.id)
             except asyncio.TimeoutError:
                 await asyncio.create_task(safe_delete_message(dataset_prompt))
                 await self.original_interaction.edit_original_response(
@@ -1979,7 +2333,7 @@ class CreateNNView(View):
 
     async def start_training(self, interaction: discord.Interaction, dataframe: pd.DataFrame, feature_cols, label_col):
         """Handles the training after dataset selection."""
-        self.stop()  # Stop the view to prevent multiple interactions
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
@@ -2023,6 +2377,8 @@ class CreateNNView(View):
                     'label_col': label_col,
                     'scaler': scaler
                 }
+
+                cleanup_interaction(interaction.user.id)  # Clean up active interaction after successful training
                 
             except Exception as e:
                 await interaction.followup.send(f"Error sending results: {e}", ephemeral=True)
@@ -2032,16 +2388,16 @@ class CreateNNView(View):
         print(f"[DEBUG @ 548] Removed active interaction for user {interaction.user.id} due to invalid input.")
         cleanup_interaction(interaction.user.id)
 
-    # @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
-    # async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
-    #     """Let user manually input data values."""
-    #     for item in self.children:
-    #         item.disabled = True
-    #     await self.original_interaction.edit_original_response(view=self)
+    @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
+    async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
+        """Let user manually input data values."""
+        for item in self.children:
+            item.disabled = True
+        await self.original_interaction.edit_original_response(view=self)
 
-    #     modal = ManualModal()
-    #     await interaction.response.send_modal(modal)
-    #     bot_state.active_interactions[interaction.user.id] = interaction.response
+        modal = ManualModal()
+        await interaction.response.send_modal(modal)
+        bot_state.active_interactions[interaction.user.id] = interaction.response
 
 async def interaction_perm_check(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -2387,6 +2743,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 #         cleanup_interaction(interaction.user.id)
 #         await interaction.response.send_message("An error occurred while processing the command.", ephemeral=True)
 
-
+print(os.getenv('KAGGLE_USERNAME'), os.getenv('KAGGLE_KEY'))
 keep_alive()
 bot.run(token)
