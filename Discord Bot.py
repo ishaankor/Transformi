@@ -1534,14 +1534,13 @@ class GraphLRView(View):
             
             def search_kaggle(query: str):
                 """Searches Kaggle and returns the top 5 datasets."""
-                # We restrict the search to CSVs to avoid downloading images/audio
                 datasets = api.dataset_list(search=query, file_type='csv', sort_by='votes')
                 
                 results = []
                 for ds in datasets[:25]:
                     results.append({
                         "title": ds.title,
-                        "ref": ds.ref, # The ID needed to download it (e.g., 'zillow/zecon')
+                        "ref": ds.ref,
                         # "size": ds.size
                     })
                 return results
@@ -1861,7 +1860,7 @@ class GraphLRView(View):
     
     @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
     async def third_button_callback(self, interaction: discord.Interaction, button: Button):
-        self.stop()  # Stop the view to prevent multiple interactions
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
@@ -1870,9 +1869,9 @@ class GraphLRView(View):
         await interaction.response.send_modal(modal)
 
         try:
-            num_values = await asyncio.wait_for(modal.response_future, timeout=15)  # Wait max 5 min
+            num_values = await asyncio.wait_for(modal.response_future, timeout=15)
             print(f"User entered: {num_values}")  # Optional logging
-            # cleanup_interaction(interaction.user.id)  # Clean up active interaction on successful input
+            # cleanup_interaction(interaction.user.id) 
         except asyncio.TimeoutError:
             await self.original_interaction.edit_original_response(
                 embed=Embed(
@@ -1891,7 +1890,6 @@ class GraphLRView(View):
 async def calculate_neural_network(interaction: discord.Interaction, df: pd.DataFrame, feature_cols: list[str], label_col: str):
     """Calculates neural network regression, plots Actual vs Predicted in memory, and sends to Discord."""
     
-    # features_str = "".join(feature_cols)
     print(f"Calculating neural network for features {feature_cols} and label {label_col}...")
     await interaction.followup.send(
         f"Training Neural Network for **{feature_cols}** ➡️ **{label_col}**...", 
@@ -1915,10 +1913,8 @@ async def calculate_neural_network(interaction: discord.Interaction, df: pd.Data
         r2 = r2_score(y, predictions)
         mse = mean_squared_error(y, predictions)
         
-        # Create a figure with 2 subplots side-by-side
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
         
-        # --- Plot 1: Actual vs Predicted ---
         ax1.scatter(y, predictions, color="purple", alpha=0.5, label="Model Predictions")
         min_val = min(y.min(), predictions.min())
         max_val = max(y.max(), predictions.max())
@@ -1930,17 +1926,14 @@ async def calculate_neural_network(interaction: discord.Interaction, df: pd.Data
         ax1.legend()
         ax1.grid(True, linestyle=':', alpha=0.6)
 
-        # --- Plot 2: The Neural Network's Loss Curve ---
-        # This visualizes the network's internal learning process
         ax2.plot(nn.loss_curve_, color="blue", linewidth=2)
         ax2.set_xlabel("Training Iterations (Epochs)")
         ax2.set_ylabel("Loss (Error)")
         ax2.set_title("Network Learning Process (Loss Curve)")
         ax2.grid(True, linestyle=':', alpha=0.6)
         
-        plt.tight_layout() # Ensures the plots don't overlap
+        plt.tight_layout()
         
-        # Save to buffer
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0) 
@@ -2122,7 +2115,6 @@ class CreateNNView(View):
                 cleanup_interaction(interaction.user.id)
                 return None
             
-            # Save selected data and cleanup UI
             self.selected_data = df[[selected_feature, selected_label]]
             
             if 'max_columns_msg' in locals():
@@ -2134,7 +2126,6 @@ class CreateNNView(View):
             await feature_msg.delete()
             await label_msg.delete()
             
-            # Pass to the Neural Network function
             await calculate_neural_network(interaction, self.selected_data, selected_feature, selected_label)
             cleanup_interaction(interaction.user.id)
 
@@ -2445,12 +2436,10 @@ def cleanup_interaction(user_id):
     """Cleanup user interaction after visualization is sent."""
     if user_id in bot_state.active_interactions:
         value = bot_state.active_interactions[user_id]
-        # Handle both tuple (interaction, task) and old InteractionMessage format
         if isinstance(value, tuple):
             _, task = value
             task.cancel()
         else:
-            # It's a message object (from CSV upload prompts), delete it
             asyncio.create_task(safe_delete_message(value))
         del bot_state.active_interactions[user_id]
 
@@ -2612,6 +2601,8 @@ async def create_neural_network(interaction: discord.Interaction):
             view=createnn_view,
             ephemeral=True
         )
+        print(f"[DEBUG @ 2604] Sent dataset selection menu for neural network creation to user {interaction.user.id}")
+        cleanup_interaction(interaction.user.id)
     except Exception as e:
         print(f"Error in create_neural_network: {e}")
         await interaction.followup.send("An error occurred while processing your request.", ephemeral=True)
@@ -2619,7 +2610,6 @@ async def create_neural_network(interaction: discord.Interaction):
 # @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     print(f"[DEBUG] Handling error for user {interaction.user.id}: {error}")
-    # 1. Unwrap CommandInvokeError (Catch internal crashes and 10062 timeouts)
     if isinstance(error, app_commands.CommandInvokeError):
         original = error.original
         if isinstance(original, discord.errors.NotFound) and original.code == 10062:
