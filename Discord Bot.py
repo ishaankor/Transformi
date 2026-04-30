@@ -74,6 +74,12 @@ class BotState:
         self.nn_model_cache = {}
         # self.createnn_active_interactions = set()
         self.text_channel_list = []
+        self.user_locks = {} # Add this to handle concurrent command attempts
+
+    def get_user_lock(self, user_id):
+        if user_id not in self.user_locks:
+            self.user_locks[user_id] = asyncio.Lock()
+        return self.user_locks[user_id]
 
     async def initialize(self):
         synced = await bot.tree.sync()
@@ -187,12 +193,15 @@ class RNGModal(Modal, title="Insert the number of data values to create!"):
             test_file = File("test.png")
             await interaction.response.send_message(file=test_file, ephemeral=True)
 
+            os.remove("test.png") if os.path.exists("test.png") else None
+
             self.response_future.set_result(num_values)
 
         except ValueError:
             # await interaction.response.send_message(
             #     "Invalid input! Please enter a **positive integer**.", ephemeral=True
             # )
+            print("User entered invalid input for RNGModal.")
             await interaction.response.edit_message(
                 embed=Embed(
                     title="⚠️ Invalid input! ⚠️",
@@ -246,6 +255,7 @@ class ManualModal(Modal, title='Insert the array of data values!'):
             await interaction.response.send_message(file=test_file, ephemeral=True)
             self.response_future.set_result(input_array)
         except ValueError:
+            print("Invalid input received in ManualModal.")
             await interaction.response.edit_message(
                 embed=Embed(
                     title="⚠️ Invalid input! ⚠️",
@@ -255,7 +265,9 @@ class ManualModal(Modal, title='Insert the array of data values!'):
                 view=None
             )
             cleanup_interaction(interaction.user.id)
-            self.response_future.set_exception(ValueError("User entered invalid input."))
+            if not self.response_future.done():
+                print("Setting exception on response future due to invalid input.")
+                self.response_future.set_exception(e)
             # bot_state.active_interactions.remove(interaction.user.id)
 
     async def on_timeout(self):
@@ -528,7 +540,6 @@ async def select_feature_and_label(interaction: discord.Interaction, df: pd.Data
         except Exception as e:
             print(f"max_columns_msg not present: {e}")
         
-        # Send the timeout notice
         await interaction.edit_original_response(
                 embed=Embed(
                     title="⏱️ Timed Out! ⏱️",
@@ -637,8 +648,6 @@ class ManualDatasetModal(Modal, title="Manual Dataset Input"):
                 self.response_future.set_result(df)
 
         except ValueError as e:
-            # Since we didn't crash on self.stop(), this will now successfully 
-            # edit the original message that had the button on it!
             await interaction.response.edit_message(
                 embed=Embed(
                     title="⚠️ Invalid Input! ⚠️",
@@ -647,10 +656,10 @@ class ManualDatasetModal(Modal, title="Manual Dataset Input"):
                 ),
                 view=None
             )
+            cleanup_interaction(interaction.user.id)
 
             print(f"Error processing manual dataset input: {e}")
             
-            # This safely tells the parent view to abort, preventing the "Timed Out" screen.
             if not self.response_future.done():
                 print("Setting exception on response future due to invalid input.")
                 self.response_future.set_exception(e)
@@ -1402,6 +1411,9 @@ def train_neural_network(df, feature_cols, label_col, model_params=None):
                 if os.path.exists('test.png'):
                     os.remove('test.png')
                     print("Cleaned up test.png")
+                if os.path.exists('regression.png'):
+                    os.remove('regression.png')
+                    print("Cleaned up regression.png")
             except Exception as e:
                 print(f"Cleanup warning: {e}")
         
@@ -1475,6 +1487,8 @@ async def calculate_linear_regression(interaction: discord.Interaction, df: pd.D
         embed.set_image(url="attachment://regression.png")
 
         await interaction.followup.send(embed=embed, file=plot_file, ephemeral=True)
+
+        os.remove("regression.png") if os.path.exists("regression.png") else None
         
     except Exception as e:
         await interaction.followup.send(f"An error occurred during calculation: {e}", ephemeral=True)
@@ -1897,16 +1911,17 @@ async def calculate_neural_network(interaction: discord.Interaction, df: pd.Data
     )
 
     def compute_and_plot():        
-        
         plt.switch_backend('Agg')
         
-        X = df[feature_cols].values.reshape(-1, 1)
-        y = df[label_col].values
+        clean_df = df.dropna(subset=[feature_cols, label_col])
+        
+        X = clean_df[feature_cols].values.reshape(-1, 1)
+        y = clean_df[label_col].values
         
         scaler_X = StandardScaler()
         X_scaled = scaler_X.fit_transform(X)
         
-        nn = MLPRegressor(hidden_layer_sizes=(100, 50), max_iter=1000, random_state=42)
+        nn = MLPRegressor(hidden_layer_sizes=(20, 10), max_iter=150, random_state=42)
         nn.fit(X_scaled, y)
         
         predictions = nn.predict(X_scaled)
@@ -1974,6 +1989,9 @@ class CreateNNView(View):
             else:
                 debug_values.append(v)
         print(self.original_interaction, debug_values)
+
+        for item in self.children:
+            item.disabled = True
         
         if self.original_interaction.user.id in bot_state.active_interactions:
             print(f"[DEBUG @ 426] Timeout removing active interaction for user {self.original_interaction.user.id}")
@@ -1989,9 +2007,16 @@ class CreateNNView(View):
             return
         
         print(f"[DEBUG @ 431] Timeout ignored for user {self.original_interaction.user.id} since they interacted.")
-        for item in self.children:
-            item.disabled = True
-        await self.original_interaction.edit_original_response(view=self)
+        cleanup_interaction(self.original_interaction.user.id)
+        await self.original_interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Selection Timed Out! ⏱️",
+                    description="**You didn't respond in time!** Please run the command again.",
+                    color=0xff0000
+                ),
+                view=None
+        )
+        # await self.original_interaction.edit_original_response(view=None)
         return
 
 
@@ -2369,7 +2394,7 @@ class CreateNNView(View):
                     'scaler': scaler
                 }
 
-                cleanup_interaction(interaction.user.id)  # Clean up active interaction after successful training
+                cleanup_interaction(interaction.user.id)
                 
             except Exception as e:
                 await interaction.followup.send(f"Error sending results: {e}", ephemeral=True)
@@ -2388,7 +2413,7 @@ class CreateNNView(View):
 
         modal = ManualModal()
         await interaction.response.send_modal(modal)
-        bot_state.active_interactions[interaction.user.id] = interaction.response
+        # bot_state.active_interactions[interaction.user.id] = interaction.response
 
 async def interaction_perm_check(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -2425,23 +2450,33 @@ async def interaction_perm_check(interaction: discord.Interaction):
         return False
 
 async def remove_after_timeout(interaction: discord.Interaction, user_id, delay):
-    await asyncio.sleep(delay)
-    await interaction.followup.send(
-        "⏱️ Your interaction has timed out due to inactivity. Please run the command again if you'd like to try again!",
-        ephemeral=True
-    )
-    bot_state.active_interactions.pop(user_id, None)
+    try:
+        await asyncio.sleep(delay)
+        
+        current_value = bot_state.active_interactions.get(user_id)
+        if current_value and isinstance(current_value, tuple):
+            tracked_interaction, _ = current_value
+            
+            if tracked_interaction.id == interaction.id:
+                await interaction.followup.send(
+                    "⏱️ Your interaction has timed out due to inactivity. Please run the command again if you'd like to try again!",
+                    ephemeral=True
+                )
+                bot_state.active_interactions.pop(user_id, None)
+                
+    except asyncio.CancelledError:
+        pass
 
 def cleanup_interaction(user_id):
     """Cleanup user interaction after visualization is sent."""
-    if user_id in bot_state.active_interactions:
-        value = bot_state.active_interactions[user_id]
+    value = bot_state.active_interactions.pop(user_id, None)
+    
+    if value:
         if isinstance(value, tuple):
             _, task = value
             task.cancel()
         else:
             asyncio.create_task(safe_delete_message(value))
-        del bot_state.active_interactions[user_id]
 
 
 async def safe_delete_message(message):
@@ -2454,16 +2489,20 @@ async def safe_delete_message(message):
 async def check_user_instances(interaction: discord.Interaction):
     """Checks if a user has an ongoing interaction and prevents new ones."""
     user_id = interaction.user.id
-    if user_id in bot_state.active_interactions.keys():
-        await interaction.response.send_message(
-            "You already have an active interaction! Please complete it before starting a new one.",
-            ephemeral=True, delete_after=10
-        )
-        return False    
-    
-    task = asyncio.create_task(remove_after_timeout(interaction, user_id, 300))  # 15 minutes timeout
-    bot_state.active_interactions[user_id] = (interaction, task)
-    return True
+    lock = bot_state.get_user_lock(user_id)
+    print(f"[DEBUG] Acquiring lock for user {user_id} to check active interactions.")
+    async with lock:
+        print(f"[DEBUG] Checking active interactions for user {user_id}. Current active interactions: {list(bot_state.active_interactions.keys())}")
+        if user_id in bot_state.active_interactions.keys():
+            await interaction.response.send_message(
+                "You already have an active interaction! Please complete it before starting a new one.",
+                ephemeral=True, delete_after=10
+            )
+            return False    
+        
+        task = asyncio.create_task(remove_after_timeout(interaction, user_id, 300))
+        bot_state.active_interactions[user_id] = (interaction, task)
+        return True
 
 
 @bot.tree.command(name="describe_data", description="Generate a quick dataset summary and correlation heatmap.")
@@ -2471,9 +2510,41 @@ async def check_user_instances(interaction: discord.Interaction):
 # @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
 # @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def describe_data(interaction: discord.Interaction):
-    
+    # if interaction.guild is None:
+        # await interaction.response.send_message("This command can only be used in a server channel.", ephemeral=True)
+        # return True
+    # interaction_user_perms = interaction.channel.permissions_for(interaction.user)
     if not await check_user_instances(interaction):
+        # print(interaction_bot_perms.attach_files)
         return
+    else:
+        # print(f"[DEBUG @ 2602] Starting graph_linear_regression command for user {interaction.user.id}")
+        pass
+    #     bot_state.active_interactions[interaction.user.id] = interaction
+    #     print(bot_state.active_interactions)
+    
+    await interaction.response.defer(ephemeral=True)
+
+    if interaction.guild:
+        interaction_bot_perms = interaction.channel.permissions_for(interaction.guild.me)
+        if not interaction_bot_perms.attach_files:
+            print("Bot lacks attach files permission, denying CSV upload.")
+            await interaction.edit_original_response(
+                    embed=Embed(
+                        title="⚠️ Permission Error! ⚠️",
+                        description=f"Please run the command again in a channel where I have that permission, or direct message me!",
+                        color=0xff0000
+                    ),
+                    view=None
+                )
+            # await interaction.edit_original_response(
+            #     "I lack the **'Attach Files'** permission to receive a CSV file! Please run the command again in a channel where I have that permission, or direct message me!")
+            print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
+            cleanup_interaction(interaction.user.id)
+                # bot_state.graphlr_active_interactions.discard(interaction)
+            return
+    else:
+        print("Interaction is in DMs, skipping permission check.")
     
     try:
         await interaction.response.defer(ephemeral=True)
@@ -2487,6 +2558,7 @@ async def describe_data(interaction: discord.Interaction):
             description="1️⃣ Random Dataset Generator \n2️⃣ Dataset File \n3️⃣ Manual Input"
         )
         if df is None:
+            # cleanup_interaction(interaction.user.id)
             return
 
         embed = await asyncio.get_event_loop().run_in_executor(None, build_dataset_summary_embed, df)
@@ -2506,8 +2578,36 @@ async def describe_data(interaction: discord.Interaction):
 # @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
 # @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def compare_models(interaction: discord.Interaction):
+        # await interaction.response.send_message("This command can only be used in a server channel.", ephemeral=True)
+        # return True
+    # interaction_user_perms = interaction.channel.permissions_for(interaction.user)
     if not await check_user_instances(interaction):
+        # print(interaction_bot_perms.attach_files)
         return
+    else:
+        print(f"[DEBUG @ 2603] Starting compare_models command for user {interaction.user.id}")
+    #     bot_state.active_interactions[interaction.user.id] = interaction
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    if interaction.guild:
+        interaction_bot_perms = interaction.channel.permissions_for(interaction.guild.me)
+        if not interaction_bot_perms.attach_files:
+            print("Bot lacks attach files permission, denying CSV upload.")
+            await interaction.edit_original_response(
+                    embed=Embed(
+                        title="⚠️ Permission Error! ⚠️",
+                        description=f"Please run the command again in a channel where I have that permission, or direct message me!",
+                        color=0xff0000
+                    ),
+                    view=None
+                )
+            # await interaction.edit_original_response(
+            #     "I lack the **'Attach Files'** permission to receive a CSV file! Please run the command again in a channel where I have that permission, or direct message me!")
+            print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
+            cleanup_interaction(interaction.user.id)
+                # bot_state.graphlr_active_interactions.discard(interaction)
+            return
 
     try:
         await interaction.response.defer(ephemeral=True)
@@ -2554,7 +2654,16 @@ async def compare_models(interaction: discord.Interaction):
                 ),
                 view=None
             )
+        except TimeoutError as exc:
             # await interaction.edit_original_response(f'Comparison failed: {exc}', ephemeral=True)
+            await interaction.edit_original_response(
+                embed=Embed(
+                    title="⏱️ Timed Out! ⏱️",
+                    description="**You didn't select a feature and label in time!** Please run the command again.",
+                    color=0xff0000,
+                ),
+                view=None
+            )
     finally:
         cleanup_interaction(interaction.user.id)
 
@@ -2572,13 +2681,50 @@ async def restart(ctx: discord.ext.commands.Context):
 # @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
 # @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def graph_linear_regression(interaction: discord.Interaction):
+    # if interaction.guild is None:
+        # await interaction.response.send_message("This command can only be used in a server channel.", ephemeral=True)
+        # return True
+    # interaction_user_perms = interaction.channel.permissions_for(interaction.user)
+    # interaction_bot_perms = interaction.channel.permissions_for(interaction.guild.me)
     if not await check_user_instances(interaction):
+        # print(interaction_bot_perms.attach_files)
         return
+    else:        
+        print(f"[DEBUG @ 2602] Starting graph_linear_regression command for user {interaction.user.id}")
+    #     bot_state.active_interactions[interaction.user.id] = interaction
+    
     await interaction.response.defer(ephemeral=True)
-    graphlr_view = GraphLRView(interaction)
-    await interaction.followup.send(embed=Embed(title="How would you like to display your dataset?",
-                                                description="1️⃣ Random Dataset Generator \n 2️⃣ Dataset File \n 3️⃣ Given Numbers/Array"),
-                                    view=graphlr_view, ephemeral=True)
+
+    if interaction.guild:
+        interaction_bot_perms = interaction.channel.permissions_for(interaction.guild.me)
+        if not interaction_bot_perms.attach_files:
+            print("Bot lacks attach files permission, denying CSV upload.")
+            await interaction.edit_original_response(
+                    embed=Embed(
+                        title="⚠️ Permission Error! ⚠️",
+                        description=f"Please run the command again in a channel where I have 'Attach Files' permission, or direct message me!",
+                        color=0xff0000
+                    ),
+                    view=None
+                )
+            # await interaction.edit_original_response(
+            #     "I lack the **'Attach Files'** permission to receive a CSV file! Please run the command again in a channel where I have that permission, or direct message me!")
+            print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
+            cleanup_interaction(interaction.user.id)
+                # bot_state.graphlr_active_interactions.discard(interaction)
+            return
+    # await interaction.response.defer(ephemeral=True)
+    try:
+        graphlr_view = GraphLRView(interaction)
+        await interaction.followup.send(embed=Embed(title="How would you like to display your dataset?",
+                                                    description="1️⃣ Random Dataset Generator \n 2️⃣ Dataset File \n 3️⃣ Given Numbers/Array"),
+                                        view=graphlr_view, ephemeral=True)
+    except TimeoutError as e:
+        print(f"[DEBUG @ 535] Timeout error occurred for user {interaction.user.id}: {e}")
+        await interaction.edit_original_response(
+            content="Command timed out. Please try again."
+        )
+        cleanup_interaction(interaction.user.id)
 
 
 @bot.tree.command(name="create_neural_network", description="Creates a neural network model of the given dataset/values.")
@@ -2586,10 +2732,39 @@ async def graph_linear_regression(interaction: discord.Interaction):
 # @app_commands.checks.bot_has_permissions(view_channel=True, send_messages=True, attach_files=True, add_reactions=True, manage_messages=True)
 # @app_commands.checks.has_permissions(view_channel=True, send_messages=True, use_application_commands=True)
 async def create_neural_network(interaction: discord.Interaction):
+    # if interaction.guild is None:
+        # await interaction.response.send_message("This command can only be used in a server channel.", ephemeral=True)
+        # return True
+    # interaction_user_perms = interaction.channel.permissions_for(interaction.user)
+    # interaction_bot_perms = interaction.channel.permissions_for(interaction.guild.me)
+    # print(f"User perms: {interaction.channel.permissions_for(interaction.user.id)}, Bot perms: {interaction_bot_perms}")
     if not await check_user_instances(interaction):
+        # print(interaction_bot_perms.attach_files)
         return
-    
+    else:
+        print(f"[DEBUG @ 2603] Starting create_neural_network command for user {interaction.user.id}")
+    #     bot_state.active_interactions[interaction.user.id] = interaction
+
     await interaction.response.defer(ephemeral=True)
+
+    if interaction.guild:
+        interaction_bot_perms = interaction.channel.permissions_for(interaction.guild.me)
+        if not interaction_bot_perms.attach_files:
+            print("Bot lacks attach files permission, denying CSV upload.")
+            await interaction.edit_original_response(
+                    embed=Embed(
+                        title="⚠️ Permission Error! ⚠️",
+                        description=f"Please run the command again in a channel where I have that permission, or direct message me!",
+                        color=0xff0000
+                    ),
+                    view=None
+                )
+            # await interaction.edit_original_response(
+            #     "I lack the **'Attach Files'** permission to receive a CSV file! Please run the command again in a channel where I have that permission, or direct message me!")
+            print(f"[DEBUG @ 535] Removed active interaction for user {interaction.user.id} due to invalid input.")
+            cleanup_interaction(interaction.user.id)
+                # bot_state.graphlr_active_interactions.discard(interaction)
+            return
 
     try:
         createnn_view = CreateNNView(interaction)
@@ -2602,7 +2777,7 @@ async def create_neural_network(interaction: discord.Interaction):
             ephemeral=True
         )
         print(f"[DEBUG @ 2604] Sent dataset selection menu for neural network creation to user {interaction.user.id}")
-        cleanup_interaction(interaction.user.id)
+        # cleanup_interaction(interaction.user.id)
     except Exception as e:
         print(f"Error in create_neural_network: {e}")
         await interaction.followup.send("An error occurred while processing your request.", ephemeral=True)
@@ -2614,8 +2789,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         original = error.original
         if isinstance(original, discord.errors.NotFound) and original.code == 10062:
             print(f"[WARNING] Interaction timed out for {interaction.user.name}. Aborting error response.")
-            # cleanup_interaction(interaction.user.id) # Call your cleanup function here if needed
-            return # Silently abort to prevent the double-crash
+            # cleanup_interaction(interaction.user.id)
+            return
         else:
             msg = f"An internal error occurred: {original}"
             print(f"[ERROR] In command {interaction.command.name}: {original}")
@@ -2647,7 +2822,6 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         else:
             await interaction.response.send_message(msg, ephemeral=True, delete_after=10)
     except discord.errors.NotFound:
-        # Failsafe in case the interaction died EXACTLY as this block executed
         pass
 
     cleanup_interaction(interaction.user.id)
