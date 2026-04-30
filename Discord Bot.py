@@ -267,7 +267,7 @@ class ManualModal(Modal, title='Insert the array of data values!'):
             cleanup_interaction(interaction.user.id)
             if not self.response_future.done():
                 print("Setting exception on response future due to invalid input.")
-                self.response_future.set_exception(e)
+                self.response_future.set_exception(ValueError("User entered invalid input."))
             # bot_state.active_interactions.remove(interaction.user.id)
 
     async def on_timeout(self):
@@ -2407,12 +2407,14 @@ class CreateNNView(View):
     @discord.ui.button(emoji="3️⃣", label="Manual Input", style=discord.ButtonStyle.primary)
     async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
         """Let user manually input data values."""
+        self.stop()
         for item in self.children:
             item.disabled = True
         await self.original_interaction.edit_original_response(view=self)
 
         modal = ManualModal()
         await interaction.response.send_modal(modal)
+        cleanup_interaction(interaction.user.id)
         # bot_state.active_interactions[interaction.user.id] = interaction.response
 
 async def interaction_perm_check(interaction: discord.Interaction):
@@ -2463,6 +2465,11 @@ async def remove_after_timeout(interaction: discord.Interaction, user_id, delay)
                     ephemeral=True
                 )
                 bot_state.active_interactions.pop(user_id, None)
+                print(f"[DEBUG @ 562] Removed active interaction for user {user_id} due to timeout.")
+                print(bot_state.active_interactions)
+        else:
+            print(f"[DEBUG @ 567] No active interaction found for user {user_id} during timeout cleanup.")
+
                 
     except asyncio.CancelledError:
         pass
