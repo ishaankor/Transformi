@@ -31,12 +31,6 @@ The bot uses a **hybrid approach**:
 - Optimized batch sizes for memory efficiency
 - Background threading for web server
 
-## 🔒 Security & Best Practices
-- Environment variables for all secrets
-- `.gitignore` prevents accidental token commits
-- Health check endpoints for monitoring
-- Error handling and graceful failure recovery
-
 ## 📁 Project Structure
 ```
 ├── Discord Bot.py          # Main bot file
