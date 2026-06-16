@@ -1,4 +1,4 @@
-# Discord Bot - Machine Learning & Data Visualization
+# Transformi! - Machine Learning & Data Visualization
 
 ## Features
 - Linear regression graphing with random data, CSV files, or manual input
@@ -6,7 +6,7 @@
 - Interactive Discord UI components
 - File generation (graphs, model architectures)
 
-## 🛠️ How It Works
+## How It Works
 
 The bot uses a **hybrid approach**:
 1. **Discord Bot** runs in the main thread
