@@ -1,45 +1,34 @@
-# Transformi! - Machine Learning & Data Visualization
+<p align="center">
+  <img width="150" height="150" src="./public/transformi_logo.png" alt="logo">
+</p>
 
-## Features
-- Linear regression graphing with random data, CSV files, or manual input
-- Neural network training and visualization using TensorFlow
-- Interactive Discord UI components
-- File generation (graphs, model architectures)
+> A conversational machine learning Discord bot that transforms various inputs into interactive models, visualizations, and data-driven insights.
 
-## How It Works
+Transformi positions itself as a data science proof-of-concept: a Discord-based analytic co-pilot that blends model experimentation, visualization, and deployment-ready application design.
 
-The bot uses a **hybrid approach**:
-1. **Discord Bot** runs in the main thread
-2. **Flask Web Server** runs in a background thread
-3. **Render** pings the web server to keep the service alive
-4. **Health checks** ensure the bot stays online 24/7
+---
 
-### Dependencies:
-- **discord.py** - Discord API wrapper
-- **tensorflow** - Neural network training
-- **matplotlib** - Graph generation
-- **pandas/numpy** - Data processing
-- **flask** - Web server for health checks
-- **scikit-learn** - Machine learning utilities
+### The Vision
+Modern analytics often live in fragmented tools: notebooks, BI dashboards, and command-line scripts. Transformi brings this experience into a single, conversational interface. The project demonstrates how a data scientist can interact with a dataset through chat: generating regression plots, selecting features, training models, and receiving visual artifacts without leaving Discord.
 
-### SSL Configuration:
-- Automatic SSL certificate handling for macOS
-- TensorFlow threading optimization to prevent mutex issues
+### Engineering Highlights
+- **Conversational ML integration:** Discord commands and rich UI components enable dynamic dataset selection, manual input, and on-demand model execution.
+- **End-to-end modeling:** Supports linear regression, classification, neural network training, and ensemble methods using `scikit-learn` and `tensorflow`.
+- **Automated visualization:** Generates charts and model outputs as image attachments, allowing users to interpret results immediately.
+- **Deployment-friendly health layer:** A lightweight Flask service provides `/`, `/health`, and `/ping` endpoints to support managed hosting and uptime monitoring.
+- **Context-aware interaction state:** User session locking and cached state management help the bot coordinate multi-step analytical workflows safely.
+- **Robust data handling:** Uses `pandas`, `numpy`, and `pyarrow` for rapid preprocessing, dataset transformation, and CSV support.
 
-### Performance Optimizations:
-- Reduced dataset sizes for free tier compatibility
-- Optimized batch sizes for memory efficiency
-- Background threading for web server
+### Technical Architecture
+- `pandas`, `numpy`, `pyarrow` for data ingestion and transformation
+- `scikit-learn` for regression, classification, preprocessing, and evaluation
+- `tensorflow-cpu` for neural network training and model visualization
+- `matplotlib`, `seaborn` for charts and analysis plots
 
-## 📁 Project Structure
-```
-├── Discord Bot.py          # Main bot file
-├── keep_alive.py           # Flask web server for health checks
-├── requirements.txt        # Python dependencies
-├── render.yaml            # Render deployment config
-├── Procfile               # Heroku deployment config
-├── runtime.txt            # Python version specification
-├── Dockerfile             # Docker deployment config
-├── .env.example           # Environment variables template
-└── README.md              # This file
-```
+### What Transformi Demonstrates
+- Rapid exploration of raw and structured data through chat-driven inputs
+- Visual regression analysis from generated or user-provided values
+- Neural network training with immediate feedback and rendered artifacts
+- Hybrid application design that combines bot UX with service monitoring
+
+---

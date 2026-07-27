@@ -5,7 +5,6 @@ import io
 import sys
 import asyncio
 import random
-import graphviz
 import numpy as np
 import pandas as pd
 import pyarrow
@@ -15,6 +14,9 @@ import pickle
 from sklearn.neural_network import MLPClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, ConfusionMatrixDisplay
 import tensorflow as tf
 # from tensorflow.keras import utils
 from sklearn.datasets import make_classification
@@ -74,7 +76,7 @@ class BotState:
         self.nn_model_cache = {}
         # self.createnn_active_interactions = set()
         self.text_channel_list = []
-        self.user_locks = {} # Add this to handle concurrent command attempts
+        self.user_locks = {}
 
     def get_user_lock(self, user_id):
         if user_id not in self.user_locks:
@@ -252,13 +254,14 @@ class ManualModal(Modal, title='Insert the array of data values!'):
             plt.plot(np_x, reg.predict(np_x.reshape(-1, 1)), color='k')
             plt.savefig('test.png')
             test_file = File('test.png')
+            os.remove('test.png') if os.path.exists('test.png') else None
             await interaction.response.send_message(file=test_file, ephemeral=True)
             self.response_future.set_result(input_array)
         except ValueError:
             print("Invalid input received in ManualModal.")
             await interaction.response.edit_message(
                 embed=Embed(
-                    title="⚠️ Invalid input! ⚠️",
+                    title="⚠️ /Invalid input! ⚠️",
                     description="**Please enter a positive integer.**",
                     color=0xff0000,
                 ),
@@ -789,18 +792,81 @@ class DatasetInputView(View):
         self.stop()
         for item in self.children:
             item.disabled = True
-        print("Generating random dataset...")
+        
+        # Acknowledge the interaction and update the view
         await interaction.response.edit_message(view=self)
-        # bot_state.active_interactions[interaction.user.id] = interaction.response
-        num_samples = 100
-        x = np.random.rand(num_samples)
-        y = 3 * x + np.random.randn(num_samples) * 0.1
-        df = pd.DataFrame({'feature': x, 'label': y})
-        print("Random dataset generated.")
-        self.complete_selection(df=df)
-        print("Random dataset selection complete.")
-        # cleanup_interaction(interaction.user.id)
-        return 
+
+        await interaction.followup.send(
+            f"{interaction.user.mention}, fetching a random dataset from Kaggle... ⏳\n*(This takes a moment to download and unzip in the background!)*", 
+            ephemeral=True
+        )
+
+        loop = asyncio.get_running_loop()
+
+        def fetch_and_process_dataset():
+            try:
+                from kaggle.api.kaggle_api_extended import KaggleApi
+                api = KaggleApi()
+                api.authenticate()
+
+                search_topics = [
+                    "regression", 
+                    "salary predict", 
+                    "housing prices", 
+                    "insurance costs", 
+                    "sales forecasting",
+                    "weather numerical"
+                ]
+                query = random.choice(search_topics)
+
+                datasets = api.dataset_list(max_size=5_000_000, file_type='csv', sort_by='votes', search=query)
+                results = list(datasets[:25])
+
+                if not results:
+                    return None, "No datasets found on Kaggle."
+
+                max_attempts = 5
+                for _ in range(max_attempts):
+                    chosen_dataset = random.choice(results)
+                    dataset_ref = chosen_dataset.ref
+
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        api.dataset_download_files(dataset_ref, path=temp_dir, unzip=True)
+                        csv_files = glob.glob(os.path.join(temp_dir, '**', '*.csv'), recursive=True)
+                        
+                        if not csv_files:
+                            continue 
+                        
+                        df = pd.read_csv(csv_files[0], engine="pyarrow")
+                        temp_numeric_df = get_numeric_dataframe(df)
+                        
+                        if temp_numeric_df.shape[1] >= 2:
+                            return df, None
+
+                return None, "Could not find a random dataset with at least 2 numeric columns after 5 attempts. Try again!"
+            
+            except Exception as e:
+                return None, f"An error occurred while communicating with Kaggle: {e}"
+
+        try:
+            df, error_msg = await loop.run_in_executor(None, fetch_and_process_dataset)
+
+            if error_msg:
+                await interaction.followup.send(error_msg, ephemeral=True)
+                cleanup_interaction(interaction.user.id)
+                self.complete_selection(exc=ValueError(error_msg))
+                return
+
+            if len(df) > 5000:
+                df = df.sample(n=5000, random_state=42)
+
+            print("Random Kaggle dataset successfully fetched and selected.")
+            self.complete_selection(df=df)
+            
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while fetching the dataset: {e}", ephemeral=True)
+            cleanup_interaction(interaction.user.id)
+            self.complete_selection(exc=e)
 
     @discord.ui.button(label="Manual Input", style=discord.ButtonStyle.success)
     async def manual_input_callback(self, interaction: discord.Interaction, button: Button):
@@ -1555,7 +1621,6 @@ class GraphLRView(View):
                     results.append({
                         "title": ds.title,
                         "ref": ds.ref,
-                        # "size": ds.size
                     })
                 return results
 
@@ -1884,8 +1949,8 @@ class GraphLRView(View):
 
         try:
             num_values = await asyncio.wait_for(modal.response_future, timeout=15)
-            print(f"User entered: {num_values}")  # Optional logging
-            # cleanup_interaction(interaction.user.id) 
+            print(f"User entered: {num_values}")
+            cleanup_interaction(interaction.user.id) 
         except asyncio.TimeoutError:
             await self.original_interaction.edit_original_response(
                 embed=Embed(
@@ -2671,6 +2736,175 @@ async def compare_models(interaction: discord.Interaction):
                 ),
                 view=None
             )
+    finally:
+        cleanup_interaction(interaction.user.id)
+
+async def calculate_decision_tree(interaction: discord.Interaction, df: pd.DataFrame, feature_col: str, label_col: str):
+    await interaction.followup.send(
+        f"Training Decision Tree Regressor for **{feature_col}** ➡️ **{label_col}**...", 
+        ephemeral=True
+    )
+
+    def compute_and_plot():        
+        plt.switch_backend('Agg')
+        
+        clean_df = df.dropna(subset=[feature_col, label_col])
+        X = clean_df[feature_col].values.reshape(-1, 1)
+        y = clean_df[label_col].values
+        
+        dt = DecisionTreeRegressor(max_depth=3, random_state=42)
+        dt.fit(X, y)
+        preds = dt.predict(X)
+        r2 = r2_score(y, preds)
+        
+        # Plot the tree
+        plt.figure(figsize=(14, 8))
+        plot_tree(dt, feature_names=[feature_col], filled=True, rounded=True, precision=2)
+        plt.title(f"Decision Tree Structure (R² Score: {r2:.4f})")
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight')
+        buf.seek(0) 
+        plt.close()
+        
+        return buf, r2
+
+    try:
+        loop = asyncio.get_running_loop()
+        buf, r2 = await loop.run_in_executor(None, compute_and_plot)
+
+        plot_file = File(fp=buf, filename="decision_tree.png")
+        
+        embed = Embed(
+            title="🌲 Decision Tree Results",
+            description=f"**Target Variable:** `{label_col}`\n**R² Score:** `{r2:.4f}`\n*(Tree depth limited to 3 for visual clarity)*",
+            color=0x2ecc71
+        )
+        embed.set_image(url="attachment://decision_tree.png")
+
+        await interaction.followup.send(embed=embed, file=plot_file, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"An error occurred during calculation: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="graph_decision_tree", description="Trains and visualizes a Decision Tree Classifier.")
+@app_commands.check(initialization_check)
+async def decision_tree_cmd(interaction: discord.Interaction):
+    if not await check_user_instances(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        # Ask for the dataset
+        df = await ask_for_dataset_via_menu(
+            interaction,
+            title="Decision Tree: Upload Dataset",
+            description="1️⃣ Random Dataset \n2️⃣ Dataset File \n3️⃣ Manual Input"
+        )
+        if df is None:
+            return
+
+        # Ask for the feature and label
+        selected = await select_feature_and_label(interaction, df)
+        if selected is None:
+            return
+        
+        feature_col, label_col = selected
+
+        # Route to our new function
+        await calculate_decision_tree(interaction, df, feature_col, label_col)
+
+    finally:
+        cleanup_interaction(interaction.user.id)
+
+async def calculate_random_forest(interaction: discord.Interaction, df: pd.DataFrame, feature_col: str, label_col: str):
+    await interaction.followup.send(
+        f"Training Random Forest Regressor for **{feature_col}** ➡️ **{label_col}**...", 
+        ephemeral=True
+    )
+
+    def compute_and_plot():        
+        plt.switch_backend('Agg')
+        
+        clean_df = df.dropna(subset=[feature_col, label_col])
+        
+        X = clean_df[feature_col].values.reshape(-1, 1)
+        y = clean_df[label_col].values
+        
+        rf = RandomForestRegressor(n_estimators=50, random_state=42)
+        rf.fit(X, y)
+        preds = rf.predict(X)
+        r2 = r2_score(y, preds)
+        
+        importances = rf.feature_importances_
+        
+        # Sort the features by importance
+        indices = np.argsort(importances)
+        
+        plt.figure(figsize=(10, 6))
+        plt.title(f"Random Forest Feature Importances (R² = {r2:.4f})")
+        plt.barh(range(len(indices)), importances[indices], color='b', align='center')
+        
+        # Set the y-axis labels to the actual column names
+        sorted_features = [feature_col[i] for i in indices]
+        plt.yticks(range(len(indices)), sorted_features)
+        plt.xlabel('Relative Importance')
+        plt.tight_layout()
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0) 
+        plt.close()
+        
+        return buf, r2
+    try:
+        loop = asyncio.get_running_loop()
+        buf, r2 = await loop.run_in_executor(None, compute_and_plot)
+
+        plot_file = File(fp=buf, filename="random_forest.png")
+        
+        embed = Embed(
+            title="🌳 Random Forest Results",
+            description=f"**Target Variable:** `{label_col}`\n**R² Score:** `{r2:.4f}`",
+            color=0x3498db
+        )
+        embed.set_image(url="attachment://random_forest.png")
+
+        await interaction.followup.send(embed=embed, file=plot_file, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"An error occurred during calculation: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="graph_random_forest", description="Trains and visualizes a Random Forest Classifier.")
+@app_commands.check(initialization_check)
+async def random_forest_cmd(interaction: discord.Interaction):
+    if not await check_user_instances(interaction):
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        df = await ask_for_dataset_via_menu(
+            interaction,
+            title="Random Forest: Upload Dataset",
+            description="1️⃣ Random Dataset \n2️⃣ Dataset File \n3️⃣ Manual Input"
+        )
+        if df is None:
+            return
+
+        # Ask for the feature and label
+        selected = await select_feature_and_label(interaction, df)
+        if selected is None:
+            return
+        
+        feature_col, label_col = selected
+
+        # Route to our new function
+        await calculate_random_forest(interaction, df, feature_col, label_col)
+
     finally:
         cleanup_interaction(interaction.user.id)
 
