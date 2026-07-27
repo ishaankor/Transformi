@@ -1,0 +1,17 @@
+name: Keep Alive ping
+
+on:
+  schedule:
+    - cron: '*/1 * * * *'
+  workflow_dispatch:
+
+jobs:
+  curl-website:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run cURL on Website
+        run: |
+          echo "Pinging website..."
+          curl -v https://transformi.onrender.com
+
