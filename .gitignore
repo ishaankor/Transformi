@@ -23,11 +23,15 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+Dockerfile
+keep_alive.py
+main.py
 
 # Virtual environments
 venv/
 env/
 ENV/
+render.yaml
 
 # IDE
 .idea/
@@ -36,7 +40,6 @@ ENV/
 *.swo
 
 # Generated files
-*.png
 *.jpg
 *.jpeg
 model_architecture.png
