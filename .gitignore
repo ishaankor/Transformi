@@ -38,6 +38,7 @@ render.yaml
 .vscode/
 *.swp
 *.swo
+.python-version
 
 # Generated files
 *.jpg
